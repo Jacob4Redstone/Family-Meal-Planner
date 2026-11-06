@@ -2,7 +2,7 @@
 # Meal Planner - Proxmox VE LXC installer (community-scripts style)
 #
 # Run in the Proxmox VE host shell:
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Jacob4Redstone/family-meal-planner/main/proxmox/standalone-installer.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Jacob4Redstone/Family-Meal-Planner/refs/heads/main/family-meal-planner/proxmox/standalone-installer.sh)"
 # Update an existing container:
 #   CTID=105 bash standalone-installer.sh update
 #

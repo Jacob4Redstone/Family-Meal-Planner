@@ -1,41 +1,12 @@
 import json
-import os
 import random
 import sqlite3
-import sys
 import time
 from datetime import date, timedelta
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import app as appmod  # noqa: E402
-
-
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    monkeypatch.setitem(appmod.app.config, "DB_PATH", str(tmp_path / "t.db"))
-    monkeypatch.setattr(appmod, "AUTH_PASSWORD", "")
-    monkeypatch.setattr(appmod, "ENABLE_URL_IMPORT", False)
-    appmod.init_db()
-    random.seed(1234)
-    c = appmod.app.test_client()
-    c.environ_base["HTTP_X_REQUESTED_WITH"] = "fetch"
-    return c
-
-
-def mk(c, name, **kw):
-    r = c.post("/api/meals", json={"name": name, **kw})
-    assert r.status_code == 201, r.get_json()
-    return r.get_json()["id"]
-
-
-def day(offset=0, base=date(2030, 1, 7)):  # 2030-01-07 is a Monday
-    return (base + timedelta(offset)).isoformat()
-
-
-def plan_of(c, start, end):
-    return {r["day"]: r for r in c.get(f"/api/plan?start={start}&end={end}").get_json()}
+from helpers import appmod, day, mk, plan_of  # noqa: E402  (also puts the app on sys.path)
 
 
 # ---------------------------------------------------------------- parsing

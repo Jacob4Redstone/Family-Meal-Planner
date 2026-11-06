@@ -213,6 +213,14 @@ fieldset{border:0;padding:0;margin:.6rem 0}
         <input id="sUnits" placeholder="bunch, clove, pinch">
         <p class="hint">Known units: g, kg, ml, cl, dl, l, tsp, tbsp, cup, oz, lb, pcs, can, pack (also stk, spsk, tsk). Add your own here, separated by commas.</p>
 
+        <label class="f" for="sSyn">Ingredient synonyms (one per line)</label>
+        <textarea id="sSyn" placeholder="cherry tomato = tomato&#10;red onion = red onion"></textarea>
+        <p class="hint">The item on the left is treated as the item on the right, so both merge on the shopping list. Already built in: scallion, cilantro, zucchini, ground beef, red/yellow/white onion and more. Write “red onion = red onion” to keep one of them separate.</p>
+
+        <label class="f" for="sUnitSys">Units on the shopping list</label>
+        <select id="sUnitSys" style="max-width:20rem"><option value="recipe">As written in the recipes</option><option value="metric">Metric (g, kg, ml, l)</option><option value="imperial">Imperial (oz, lb, cups)</option></select>
+        <p class="hint">“As written” keeps dl, cl, ounces and cups when your recipes use them. Metric and imperial convert and merge everything.</p>
+
         <div class="actions"><button class="btn primary" type="submit">Save settings</button></div>
       </form>
 
@@ -592,6 +600,7 @@ function fillSettings(){
   $('#sHousehold').value=S.household;$('#sWeek').value=String(S.week_start);
   $('#sSlots').value=S.slots.join('\n');$('#sQuotas').value=S.quotas.join('\n');
   $('#sPantry').value=S.pantry.join('\n');$('#sUnits').value=S.units.join(', ');
+  $('#sSyn').value=S.synonyms.join('\n');$('#sUnitSys').value=S.unit_system;
   $('#icsUrl').value=location.origin+'/calendar.ics';
   $('#pwaStatus').textContent=window.isSecureContext&&'serviceWorker' in navigator
     ?'Available: the last loaded shopping list stays usable without a connection, and your browser may offer to install this page as an app.'
@@ -602,7 +611,8 @@ $('#setForm').addEventListener('submit',guard(async e=>{
   e.preventDefault();
   if(+$('#sWeek').value!==S.week_start&&!confirm('Changing the first day of the week resets the ticks on shopping lists (extra items are kept). Continue?'))return;
   S=await api('/settings',{method:'PUT',body:{household:+$('#sHousehold').value||0,week_start:+$('#sWeek').value,
-    slots:$('#sSlots').value,quotas:$('#sQuotas').value,pantry:$('#sPantry').value,units:$('#sUnits').value}});
+    slots:$('#sSlots').value,quotas:$('#sQuotas').value,pantry:$('#sPantry').value,units:$('#sUnits').value,
+    synonyms:$('#sSyn').value,unit_system:$('#sUnitSys').value}});
   weekStart=startOfWeek(weekStart);fillSettings();toast('Settings saved.');
 }));
 $('#restoreFile').onchange=guard(async e=>{

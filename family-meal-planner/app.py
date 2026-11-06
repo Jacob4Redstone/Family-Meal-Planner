@@ -16,6 +16,8 @@ from datetime import date, datetime, timedelta, timezone
 from flask import Flask, Response, abort, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
+from ingredients import build_synonyms, clean_ingredient, fmt_qty, parse_ingredient, parse_ingredient_full, singular  # noqa: F401
+
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 GAP_DAYS = int(os.environ.get("GAP_DAYS", "21"))  # a meal may not repeat within this many days
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "")  # optional HTTP basic-auth password (any user name)
@@ -141,7 +143,16 @@ def to_int(v, lo, hi, default):
 
 # ---------------------------------------------------------------- settings
 
-DEFAULT_SETTINGS = {"household": 0, "week_start": 0, "pantry": [], "units": [], "slots": [], "quotas": []}
+UNIT_SYSTEMS = ("recipe", "metric", "imperial")
+DEFAULT_SETTINGS = {
+    "household": 0, "week_start": 0, "pantry": [], "units": [], "slots": [], "quotas": [],
+    "synonyms": [],             # 'red onion = onion'
+    "unit_system": "recipe",    # recipe = use the unit the recipes used; metric; imperial
+    "avoid": [],                # words that exclude a meal from planning (allergies, dislikes)
+    "cooks": [],                # 'Mon-Fri = Anna'
+    "rules": [],                # 'Mon-Fri = quick' (prefer meals with that tag on those weekdays)
+    "aisle_order": [],          # order of the shopping list groups
+}
 DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 DAY_ALIASES = {"man": 0, "tir": 1, "ons": 2, "tor": 3, "fre": 4, "lør": 5, "søn": 6}
 
@@ -165,6 +176,65 @@ def parse_weekdays(x):
         if i is not None:
             out.add(i)
     return sorted(out)
+
+
+def parse_day_set(text):
+    """'Mon-Fri' / 'Sat, Sun' / 'Fri' -> set of weekday numbers (Mon=0); ranges may wrap ('Fri-Mon')."""
+    out = set()
+    for part in re.split(r"[,;&]+", text):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r"^([^-–]+?)\s*[-–]\s*(.+)$", part)
+        if m:
+            a, b = weekday_index(m.group(1)), weekday_index(m.group(2))
+            if a is None or b is None:
+                raise ValueError(part)
+            i = a
+            while True:
+                out.add(i)
+                if i == b:
+                    break
+                i = (i + 1) % 7
+        else:
+            i = weekday_index(part)
+            if i is None:
+                raise ValueError(part)
+            out.add(i)
+    if not out:
+        raise ValueError(text)
+    return out
+
+
+def parse_cooks(lines):
+    """'Mon-Fri = Anna' -> {weekday: name}"""
+    out = {}
+    for l in lines:
+        m = re.match(r"^\s*([^=:]+?)\s*[=:]\s*(.+?)\s*$", l)
+        try:
+            days = parse_day_set(m.group(1)) if m else None
+        except ValueError:
+            days = None
+        if not days:
+            raise ValueError(f"Cannot read the cook line “{l}”. Use for example: Mon-Fri = Anna")
+        for i in days:
+            out[i] = m.group(2)[:40]
+    return out
+
+
+def parse_rules(lines):
+    """'Mon-Fri = quick' -> [(set of weekdays, 'quick'), ...]"""
+    out = []
+    for l in lines:
+        m = re.match(r"^\s*([^=:]+?)\s*[=:]\s*(.+?)\s*$", l)
+        try:
+            days = parse_day_set(m.group(1)) if m else None
+        except ValueError:
+            days = None
+        if not days:
+            raise ValueError(f"Cannot read the tag rule “{l}”. Use for example: Mon-Fri = quick")
+        out += [(days, t.strip().lower()) for t in m.group(2).split(",") if t.strip()]
+    return out
 
 
 def parse_slots(lines):
@@ -202,10 +272,19 @@ def clean_settings(d):
         "units": [u.lower().rstrip(".") for u in re.split(r"[,\s]+", " ".join(lines_of(d.get("units")))) if u][:50],
         "slots": lines_of(d.get("slots"))[:14],
         "quotas": lines_of(d.get("quotas"))[:50],
+        "synonyms": lines_of(d.get("synonyms"))[:200],
+        "unit_system": d.get("unit_system") if d.get("unit_system") in UNIT_SYSTEMS else "recipe",
+        "avoid": [t.lower() for t in lines_of(d.get("avoid"))][:100],
+        "cooks": lines_of(d.get("cooks"))[:14],
+        "rules": lines_of(d.get("rules"))[:30],
+        "aisle_order": lines_of(d.get("aisle_order"))[:30],
     }
     try:
         parse_slots(s["slots"])
         parse_quotas(s["quotas"])
+        parse_cooks(s["cooks"])
+        parse_rules(s["rules"])
+        build_synonyms(s["synonyms"])
     except ValueError as e:
         abort(400, str(e))
     return s
@@ -319,10 +398,6 @@ def meal_dict(r):
         d["last_served"] = r["last_served"]
         d["times_served"] = r["times_served"]
     return d
-
-
-def clean_ingredient(s):
-    return re.sub(r"\s+", " ", s).strip().lstrip("-•* ").strip()
 
 
 def clean_meal(d):
@@ -704,13 +779,14 @@ def swap_days():
 # ---------------------------------------------------------------- planning
 
 def load_planning_meals(c, settings):
-    pantry = {parse_ingredient(p)[0] for p in settings["pantry"]}
+    syn = build_synonyms(settings.get("synonyms", []))
+    pantry = {parse_ingredient(p, (), syn)[0] for p in settings["pantry"]}
     meals = {}
     for r in c.execute("SELECT * FROM meals"):
         m = dict(r)
         m["weekdays"] = {int(x) for x in r["weekdays"].split(",") if x.strip().isdigit()}
         m["span"] = span_of(r)
-        m["ingkeys"] = {parse_ingredient(l)[0] for l in r["ingredients"].split("\n") if l} - pantry
+        m["ingkeys"] = {parse_ingredient(l, (), syn)[0] for l in r["ingredients"].split("\n") if l} - pantry
         meals[r["id"]] = m
     return meals
 
@@ -906,111 +982,6 @@ def api_can_undo():
 
 # ---------------------------------------------------------------- shopping list
 
-# unit -> (canonical unit, factor); grams and millilitres are summed and shown as kg / l when large
-UNIT_ALIASES = {
-    "g": ("g", 1), "gram": ("g", 1), "grams": ("g", 1), "gramme": ("g", 1), "grammes": ("g", 1),
-    "kg": ("g", 1000), "kilo": ("g", 1000), "kilos": ("g", 1000), "kilogram": ("g", 1000), "kilograms": ("g", 1000),
-    "ml": ("ml", 1), "milliliter": ("ml", 1), "milliliters": ("ml", 1), "millilitre": ("ml", 1), "millilitres": ("ml", 1),
-    "cl": ("ml", 10), "centiliter": ("ml", 10), "centiliters": ("ml", 10), "centilitre": ("ml", 10), "centilitres": ("ml", 10),
-    "dl": ("ml", 100), "deciliter": ("ml", 100), "deciliters": ("ml", 100), "decilitre": ("ml", 100), "decilitres": ("ml", 100),
-    "l": ("ml", 1000), "liter": ("ml", 1000), "liters": ("ml", 1000), "litre": ("ml", 1000), "litres": ("ml", 1000),
-    "tsp": ("tsp", 1), "tsps": ("tsp", 1), "tsk": ("tsp", 1), "teaspoon": ("tsp", 1), "teaspoons": ("tsp", 1),
-    "tbsp": ("tbsp", 1), "tbsps": ("tbsp", 1), "tbs": ("tbsp", 1), "tbl": ("tbsp", 1), "spsk": ("tbsp", 1),
-    "tablespoon": ("tbsp", 1), "tablespoons": ("tbsp", 1),
-    "cup": ("cup", 1), "cups": ("cup", 1),
-    "oz": ("oz", 1), "ounce": ("oz", 1), "ounces": ("oz", 1),
-    "lb": ("lb", 1), "lbs": ("lb", 1), "pound": ("lb", 1), "pounds": ("lb", 1),
-    "stk": ("pcs", 1), "pcs": ("pcs", 1), "piece": ("pcs", 1), "pieces": ("pcs", 1),
-    "can": ("can", 1), "cans": ("can", 1), "pack": ("pack", 1), "packs": ("pack", 1),
-    "clove": ("clove", 1), "cloves": ("clove", 1), "pinch": ("pinch", 1), "pinches": ("pinch", 1),
-    "bunch": ("bunch", 1), "bunches": ("bunch", 1), "handful": ("handful", 1), "handfuls": ("handful", 1),
-    "slice": ("slice", 1), "slices": ("slice", 1), "sprig": ("sprig", 1), "sprigs": ("sprig", 1),
-    "head": ("head", 1), "heads": ("head", 1),
-}
-PLURAL_UNITS = {"clove": "cloves", "pinch": "pinches", "bunch": "bunches", "handful": "handfuls", "slice": "slices",
-                "sprig": "sprigs", "head": "heads", "can": "cans", "pack": "packs"}
-FRACTIONS = {"½": 0.5, "¼": 0.25, "¾": 0.75, "⅓": 1 / 3, "⅔": 2 / 3, "⅛": 0.125}
-NUM = r"(?:\d+\s+\d+/\d+|\d+/\d+|\d*\s*[½¼¾⅓⅔⅛]|\d+(?:[.,]\d+)?)"
-# amount, optional range end ("3-4", "3 to 4"), rest of the line
-QTY = re.compile(rf"^({NUM})(?:\s*(?:-|–|—|to)\s*({NUM}))?\s*(.*)$", re.I)
-NOTE_COMMA = re.compile(r"(?<!\d),|,(?!\d)")  # a comma that is not a decimal comma
-
-
-def to_number(s):
-    s = s.strip()
-    m = re.fullmatch(r"(\d+)\s+(\d+)/(\d+)", s) or re.fullmatch(r"()(\d+)/(\d+)", s)
-    if m:
-        den = int(m.group(3))
-        return (int(m.group(1) or 0) + int(m.group(2)) / den) if den else None
-    m = re.fullmatch(r"(\d*)\s*([½¼¾⅓⅔⅛])", s)
-    if m:
-        return int(m.group(1) or 0) + FRACTIONS[m.group(2)]
-    return float(s.replace(",", "."))
-
-
-def singular(name):
-    words = name.lower().split()
-    if not words:
-        return ""
-    w = words[-1]
-    if w.endswith("ies") and len(w) > 4:
-        w = w[:-3] + "y"
-    elif w.endswith("oes"):
-        w = w[:-2]
-    elif w.endswith("s") and not w.endswith(("ss", "us", "is")) and len(w) > 3:
-        w = w[:-1]
-    words[-1] = w
-    return " ".join(words)
-
-
-def split_quantity(line, extra_units=()):
-    """'2 cups of flour' -> ('flour', 2, 'cup'); '3-4 cloves garlic' -> ('garlic', 4, 'clove');
-    '2 x 400 g tomatoes' -> ('tomatoes', 800, 'g'); 'Onion' -> ('Onion', None, '')."""
-    m = QTY.match(line)
-    if not m or not m.group(3).strip():
-        return line, None, ""
-    q = to_number(m.group(2) or m.group(1))  # for a range, buy enough: use the upper end
-    if q is None:
-        return line, None, ""
-    rest = m.group(3).strip()
-    mult = re.match(r"^[x×]\s+(.+)$", rest, re.I)
-    if mult:
-        name, inner, unit = split_quantity(mult.group(1).strip(), extra_units)
-        return name, q * (1 if inner is None else inner), unit
-    first, _, after = rest.partition(" ")
-    u, after = first.lower().rstrip("."), after.strip()
-    if after and (u in UNIT_ALIASES or u in extra_units):
-        if after.lower().startswith("of "):
-            after = after[3:].strip()
-        if u in UNIT_ALIASES:
-            unit, factor = UNIT_ALIASES[u]
-            return after, q * factor, unit
-        return after, q, u
-    return rest, q, ""
-
-
-def parse_ingredient(line, extra_units=()):
-    """'500 g minced beef' -> (key, 'Minced beef', 500.0, 'g'); '1 onion, finely chopped' -> ('onion', 'Onion', 1.0, '').
-    Text in brackets and notes after a comma are ignored, so recipe-site lines merge with plain ones."""
-    full = clean_ingredient(line)
-    short = re.sub(r"\s+", " ", NOTE_COMMA.split(re.sub(r"\([^)]*\)", " ", full), 1)[0]).strip()
-    name, qty, unit = split_quantity(short or full, extra_units)
-    name = name.strip()
-    return singular(name), name[:1].upper() + name[1:], qty, unit
-
-
-def fmt_qty(q, unit):
-    if unit == "g" and q >= 1000:
-        q, unit = q / 1000, "kg"
-    elif unit == "ml" and q >= 1000:
-        q, unit = q / 1000, "l"
-    q = round(q, 2)
-    if q != 1 and unit in PLURAL_UNITS:
-        unit = PLURAL_UNITS[unit]
-    s = f"{q:g}"
-    return f"{s} {unit}" if unit else s
-
-
 @app.get("/api/shopping")
 def shopping():
     c = db()
@@ -1025,7 +996,8 @@ def shopping():
         "WHERE p.kind='meal' AND p.day BETWEEN ? AND ? ORDER BY p.day",
         (ws.isoformat(), we.isoformat()),
     ).fetchall()  # leftover days are kind='leftover' and never contribute
-    pantry = {parse_ingredient(p)[0] for p in S["pantry"]}
+    syn, system = build_synonyms(S["synonyms"]), S["unit_system"]
+    pantry = {parse_ingredient(p, (), syn)[0] for p in S["pantry"]}
     extra_units = set(S["units"])
     items, names, hidden = {}, [], set()
     for r in rows:
@@ -1035,19 +1007,22 @@ def shopping():
         for line in r["ingredients"].split("\n"):
             if not line:
                 continue
-            key, name, qty, unit = parse_ingredient(line, extra_units)
+            key, name, qty, unit, sym = parse_ingredient_full(line, extra_units, syn, system)
             if key in pantry:
                 hidden.add(key)
                 continue
-            it = items.setdefault(key, {"key": key, "name": name, "qty": {}, "plain": 0})
+            it = items.setdefault(key, {"key": key, "name": name, "qty": {}, "plain": 0, "sym": {}})
             if qty is None:
                 it["plain"] += 1
             else:
                 it["qty"][unit] = it["qty"].get(unit, 0) + qty * factor
+                if sym:
+                    it["sym"].setdefault(unit, {})[sym] = it["sym"].get(unit, {}).get(sym, 0) + 1
     done = {r["key"] for r in c.execute("SELECT key FROM checked WHERE scope=?", (scope,))}
     out = []
     for it in items.values():
-        parts = [fmt_qty(q, u) for u, q in it["qty"].items()]
+        parts = [fmt_qty(q, u, system, max(it["sym"].get(u, {"": 0}), key=lambda k: it["sym"].get(u, {"": 0})[k]))
+                 for u, q in it["qty"].items()]
         if parts and it["plain"]:
             parts.append(f"+ {it['plain']} more")
         elif it["plain"] > 1:

@@ -1,0 +1,11 @@
+services:
+  mealplanner:
+    build: .
+    container_name: mealplanner
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - mealplanner-data:/data
+volumes:
+  mealplanner-data:

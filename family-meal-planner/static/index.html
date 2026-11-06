@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Meal planner</title>
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#244f78">
 <style>
 :root{--ink:#1d2b33;--muted:#62737c;--paper:#f7f8f5;--card:#fff;--line:#d3d9d2;--blue:#244f78;--on-blue:#fff;--stripe:#e9eee8;--today:#244f78;
 --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
@@ -12,32 +15,36 @@
 body{margin:0;font:16px/1.45 var(--sans);background:var(--paper);color:var(--ink)}
 header{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1.5rem;padding:.6rem 1rem;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
 header h1{font:700 1.2rem var(--serif);margin:0}
-nav{display:flex;gap:.25rem}
+nav{display:flex;gap:.25rem;flex-wrap:wrap}
 nav button{font:inherit;background:none;border:0;border-bottom:3px solid transparent;padding:.45rem .8rem;color:var(--muted);cursor:pointer;min-height:44px}
 nav button[aria-current=page]{color:var(--ink);border-color:var(--blue);font-weight:600}
 main{max-width:1200px;margin:0 auto;padding:1rem}
 .view{display:none}.view.active{display:block}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.day:focus-visible{outline:3px solid var(--blue);outline-offset:1px}
-.btn{font:inherit;padding:.5rem .9rem;min-height:44px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:6px;cursor:pointer}
+.btn{font:inherit;padding:.5rem .9rem;min-height:44px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:6px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
 .btn.primary{background:var(--blue);color:var(--on-blue);border-color:var(--blue);font-weight:600}
 .btn.danger{color:#b3261e}
+.btn[hidden]{display:none}
 .toolbar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:.8rem}
 .toolbar .sp,.actions .sp{flex:1}
 h2.title{font:700 clamp(1.7rem,5vw,2.7rem)/1.1 var(--serif);margin:0 .5rem 0 0}
 /* ---- calendar ---- */
-.cal{border:1px solid var(--ink);background:var(--card)}
+.cal{border:1px solid var(--ink);background:var(--card);transition:opacity .15s}
+.cal.loading{opacity:.55}
 .dows,.week{display:grid;grid-template-columns:3rem repeat(7,minmax(0,1fr))}
 .dows div{padding:.35rem .5rem;font-weight:600;font-size:.85rem;border-bottom:1px solid var(--ink)}
 .week+.week{border-top:1px solid var(--ink)}
 .wk{font:inherit;font-size:.78rem;color:var(--muted);background:var(--paper);border:0;cursor:pointer;padding:.3rem}
 .wk .l{display:none}
-.day{min-height:6.4rem;border-left:1px solid var(--line);padding:.3rem .45rem;cursor:pointer;min-width:0}
+.day{min-height:6.4rem;border-left:1px solid var(--line);padding:.3rem .45rem;cursor:pointer;min-width:0;position:relative}
 .day.out{background:var(--paper);cursor:default}
+.day.dropping{box-shadow:inset 0 0 0 3px var(--blue)}
 .dn{font:700 1.05rem var(--serif)}
-.dow{display:none;font:600 .85rem var(--sans);color:var(--muted);min-width:2.6rem;display:none}
+.dow{display:none}
 .today .dn{color:var(--today);text-decoration:underline;text-underline-offset:3px}
 .meal{font-size:.9rem;font-weight:600;line-height:1.25;overflow-wrap:anywhere}
 .cat{font-size:.72rem;color:var(--muted)}
+.pin{position:absolute;top:.25rem;right:.35rem;font-size:.75rem;color:var(--muted)}
 .day.leftover{background:repeating-linear-gradient(135deg,var(--stripe) 0 6px,var(--card) 6px 12px)}
 .day.leftover .meal{font-weight:400;font-style:italic}
 .day.custom .meal{font-weight:400}
@@ -52,24 +59,28 @@ h2.title{font:700 clamp(1.7rem,5vw,2.7rem)/1.1 var(--serif);margin:0 .5rem 0 0}
  .day{display:flex;gap:.7rem;align-items:baseline;min-height:3rem;border-left:0;border-top:1px solid var(--line)}
  .day.out{display:none}
  .dn{display:flex;gap:.6rem;align-items:baseline;min-width:5rem}
- .dow{display:inline}
+ .dow{display:inline;font:600 .85rem var(--sans);color:var(--muted);min-width:2.6rem}
+ .pin{position:static;margin-left:auto}
 }
 /* ---- shopping ---- */
 .list{list-style:none;margin:0;padding:0;max-width:34rem;background:var(--card);border:1px solid var(--line);border-radius:8px}
-.list li{border-top:1px solid var(--line)}.list li:first-child{border-top:0}
-.list label{display:flex;gap:.8rem;align-items:center;padding:.65rem .9rem;cursor:pointer;min-height:44px}
-.list input{width:1.2rem;height:1.2rem;flex:none}
+.list+.list{margin-top:.8rem}
+.list li{border-top:1px solid var(--line);display:flex;align-items:center}.list li:first-child{border-top:0}
+.list label{display:flex;flex:1;gap:.8rem;align-items:center;padding:.65rem .9rem;cursor:pointer;min-height:44px}
+.list input{width:1.2rem;height:1.2rem;flex:none;min-height:0}
 .list .n{flex:1}.list .a{color:var(--muted);font-variant-numeric:tabular-nums}
 .list input:checked~.n,.list input:checked~.a{text-decoration:line-through;opacity:.5}
+.list .rm{font:inherit;background:none;border:0;color:var(--muted);cursor:pointer;min-width:44px;min-height:44px;font-size:1.2rem}
 .based{color:var(--muted);font-size:.85rem;max-width:34rem}
+#extraForm{display:flex;gap:.5rem;max-width:34rem;margin-top:.8rem}
 /* ---- meals ---- */
 .mrow{display:flex;width:100%;gap:.7rem;align-items:baseline;text-align:left;font:inherit;color:inherit;background:var(--card);border:0;border-top:1px solid var(--line);padding:.7rem .9rem;cursor:pointer;min-height:44px}
 .mrow:first-child{border-top:0}
-.mrow .n{flex:1;font-weight:600}.mrow .m{color:var(--muted);font-size:.82rem}
-.mlist{border:1px solid var(--line);border-radius:8px;overflow:hidden;max-width:46rem}
+.mrow .n{flex:1;font-weight:600}.mrow .m{color:var(--muted);font-size:.82rem;text-align:right}
+.mlist{border:1px solid var(--line);border-radius:8px;overflow:hidden;max-width:52rem}
 .empty-note{color:var(--muted);padding:1rem 0}
 /* ---- forms ---- */
-dialog{border:1px solid var(--line);border-radius:10px;padding:1.1rem 1.2rem;width:min(30rem,calc(100vw - 1.5rem));background:var(--card);color:var(--ink)}
+dialog{border:1px solid var(--line);border-radius:10px;padding:1.1rem 1.2rem;width:min(32rem,calc(100vw - 1.5rem));max-height:92vh;overflow:auto;background:var(--card);color:var(--ink)}
 dialog::backdrop{background:rgba(0,0,0,.45)}
 dialog h2{font:700 1.3rem var(--serif);margin:0 0 .4rem}
 label.f{display:block;margin:.8rem 0 .2rem;font-weight:600;font-size:.9rem}
@@ -78,15 +89,22 @@ textarea{min-height:9rem}
 label.check{display:flex;gap:.6rem;align-items:center;margin:.9rem 0 0;font-weight:400}
 label.check input{width:1.2rem;height:1.2rem;min-height:0}
 fieldset{border:0;padding:0;margin:.6rem 0}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
+.days{display:flex;flex-wrap:wrap;gap:.3rem .9rem}
+.days label.check{margin:.2rem 0}
+.inline{display:flex;gap:.5rem;align-items:end}
 .actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1.1rem;align-items:center}
 .hint{font-size:.82rem;color:var(--muted);margin:.3rem 0 0}
 #toast{position:fixed;left:50%;bottom:1rem;transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:.6rem 1rem;border-radius:8px;max-width:90vw;display:none;z-index:20}
+.settings{max-width:40rem}
+.settings h3{font:700 1.1rem var(--serif);margin:1.6rem 0 .2rem}
+.settings textarea{min-height:5.5rem}
 .printonly{display:none}
 @media print{
  :root{--ink:#000;--paper:#fff;--card:#fff;--line:#8a8a8a;--muted:#444;--stripe:#e4e4e4;--today:#000}
  @page{size:A4 landscape;margin:9mm}
  body{background:#fff;font-size:11px}
- header,.toolbar .btn,.legend,#toast{display:none!important}
+ header,.toolbar .btn,.toolbar select,.legend,#toast,.noprint,.rm,.pin{display:none!important}
  .toolbar{margin-bottom:.3rem}
  main{padding:0;max-width:none}
  .view{display:none!important}.view.active{display:block!important}
@@ -108,6 +126,7 @@ fieldset{border:0;padding:0;margin:.6rem 0}
     <button data-tab="calendar" aria-current="page">Calendar</button>
     <button data-tab="shopping">Shopping list</button>
     <button data-tab="meals">Meals</button>
+    <button data-tab="settings">Settings</button>
   </nav>
 </header>
 <main>
@@ -117,15 +136,16 @@ fieldset{border:0;padding:0;margin:.6rem 0}
       <h2 class="title" id="monthTitle"></h2>
       <button class="btn" id="nextM" aria-label="Next month">›</button>
       <span class="sp"></span>
+      <button class="btn" id="undoPlan" hidden title="Restore the days as they were before the last planning">Undo last planning</button>
       <button class="btn" id="todayM">Today</button>
       <button class="btn primary" id="openGen">Plan meals…</button>
       <button class="btn" onclick="window.print()">Print</button>
     </div>
-    <div class="cal">
-      <div class="dows"><div></div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div></div>
+    <div class="cal" id="calBox">
+      <div class="dows" id="dows"></div>
       <div id="cal"></div>
     </div>
-    <p class="legend">Select a day to change it. Striped days are leftovers and add nothing to the shopping list.</p>
+    <p class="legend">Select a day to change it, or drag a day onto another to swap them. Striped days are leftovers and add nothing to the shopping list. 📌 marks a pinned day that planning never changes.</p>
   </section>
 
   <section id="v-shopping" class="view">
@@ -133,23 +153,80 @@ fieldset{border:0;padding:0;margin:.6rem 0}
       <button class="btn" id="prevW" aria-label="Previous week">‹</button>
       <h2 class="title" id="weekTitle" style="font-size:1.5rem"></h2>
       <button class="btn" id="nextW" aria-label="Next week">›</button>
+      <select id="weeksSel" aria-label="Number of weeks" style="width:auto">
+        <option value="1">1 week</option><option value="2">2 weeks</option><option value="4">4 weeks</option>
+      </select>
       <span class="sp"></span>
       <button class="btn" id="copyList">Copy</button>
       <button class="btn" onclick="window.print()">Print</button>
     </div>
     <div id="shop"></div>
+    <form id="extraForm" class="noprint">
+      <input id="extraName" maxlength="100" placeholder="Add something else (for example, washing-up liquid)" aria-label="Add an extra item">
+      <button class="btn" type="submit">Add</button>
+    </form>
   </section>
 
   <section id="v-meals" class="view">
     <div class="toolbar">
       <input id="q" type="search" placeholder="Search meals" aria-label="Search meals" style="flex:1;min-width:10rem;width:auto">
       <select id="catFilter" aria-label="Filter by category" style="width:auto"></select>
+      <select id="sortBy" aria-label="Sort meals" style="width:auto">
+        <option value="name">Sort: name</option>
+        <option value="oldest">Sort: served longest ago</option>
+        <option value="never">Sort: never served first</option>
+        <option value="most">Sort: served most</option>
+      </select>
       <button class="btn primary" id="addMeal">Add meal</button>
       <button class="btn" id="openImport">Import</button>
-      <a class="btn" href="/api/meals/export" download style="text-decoration:none;display:inline-flex;align-items:center">Export</a>
+      <a class="btn" href="/api/meals/export" download>Export</a>
     </div>
     <p class="hint" id="mealCount"></p>
     <div id="mealList" class="mlist"></div>
+  </section>
+
+  <section id="v-settings" class="view">
+    <div class="settings">
+      <h2 class="title" style="font-size:1.7rem">Settings</h2>
+      <form id="setForm">
+        <label class="f" for="sHousehold">Household size (people)</label>
+        <input id="sHousehold" type="number" min="0" max="50" style="max-width:8rem">
+        <p class="hint">If a meal lists how many servings its ingredients make, amounts on the shopping list are scaled to this number. 0 means no scaling.</p>
+
+        <label class="f" for="sWeek">Week starts on</label>
+        <select id="sWeek" style="max-width:12rem"><option value="0">Monday</option><option value="6">Sunday</option></select>
+
+        <label class="f" for="sSlots">Fixed days (one per line)</label>
+        <textarea id="sSlots" placeholder="Friday = Takeaway&#10;Sunday = Dinner at grandma's"></textarea>
+        <p class="hint">Planning puts this note on those weekdays instead of a meal.</p>
+
+        <label class="f" for="sQuotas">Weekly limits per category (one per line)</label>
+        <textarea id="sQuotas" placeholder="Pasta = 2&#10;Fish = 1"></textarea>
+        <p class="hint">Planning avoids more than this many meals of a category in one week, when it can.</p>
+
+        <label class="f" for="sPantry">Things you always have at home (one per line)</label>
+        <textarea id="sPantry" placeholder="Salt&#10;Pepper&#10;Olive oil"></textarea>
+        <p class="hint">These never show up on the shopping list.</p>
+
+        <label class="f" for="sUnits">Extra units</label>
+        <input id="sUnits" placeholder="bunch, clove, pinch">
+        <p class="hint">Known units: g, kg, ml, cl, dl, l, tsp, tbsp, cup, oz, lb, pcs, can, pack (also stk, spsk, tsk). Add your own here, separated by commas.</p>
+
+        <div class="actions"><button class="btn primary" type="submit">Save settings</button></div>
+      </form>
+
+      <h3>Calendar feed</h3>
+      <p class="hint">Subscribe to this address in your phone or calendar app to see the plan there:</p>
+      <input id="icsUrl" readonly aria-label="Calendar feed address">
+
+      <h3>Backup</h3>
+      <p class="hint">A backup holds all meals, the whole plan, the settings and the shopping list ticks.</p>
+      <div class="actions">
+        <a class="btn" href="/api/backup" download>Download backup</a>
+        <label class="btn" for="restoreFile" style="cursor:pointer">Restore from file…</label>
+        <input type="file" id="restoreFile" accept="application/json,.json" hidden>
+      </div>
+    </div>
   </section>
 </main>
 
@@ -168,6 +245,11 @@ fieldset{border:0;padding:0;margin:.6rem 0}
   <div id="rowMeal"><label class="f" for="dayMeal" id="dayMealLabel">Meal</label>
     <input id="dayMeal" list="mealNames" autocomplete="off" placeholder="Start typing a meal name"></div>
   <div id="rowNote"><label class="f" for="dayNote">Note</label><input id="dayNote" maxlength="80"></div>
+  <label class="check" id="rowPin"><input type="checkbox" id="dayPin"> Pin this day (planning never changes it)</label>
+  <div class="inline" style="margin-top:.8rem">
+    <div style="flex:1"><label class="f" for="swapWith" style="margin-top:0">Swap with another day</label><input type="date" id="swapWith"></div>
+    <button class="btn" id="swapBtn">Swap</button>
+  </div>
   <div class="actions">
     <button class="btn" id="reroll">Pick another for me</button><span class="sp"></span>
     <button class="btn" data-close>Cancel</button><button class="btn primary" id="saveDay">Save</button>
@@ -176,33 +258,52 @@ fieldset{border:0;padding:0;margin:.6rem 0}
 
 <dialog id="dlgGen">
   <h2>Plan meals</h2>
-  <p class="hint">Meals come from your whole list. None repeats within 21 days, and a meal with leftovers fills the next day.</p>
+  <p class="hint" id="genHint"></p>
   <fieldset><legend class="f">Plan</legend>
     <label class="check"><input type="radio" name="scope" value="month" checked> The month shown (<span id="genMonth"></span>)</label>
     <label class="check"><input type="radio" name="scope" value="week"> One week</label>
   </fieldset>
   <div id="rowWeek" hidden><label class="f" for="genWeek">Week containing</label><input type="date" id="genWeek"></div>
   <label class="f" for="genMode">Days that already have a plan</label>
-  <select id="genMode"><option value="fill">Keep them, fill the empty days</option><option value="replace">Replace them</option></select>
+  <select id="genMode"><option value="fill">Keep them, fill the empty days</option><option value="replace">Replace them (pinned days stay)</option></select>
   <div class="actions"><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="runGen">Plan meals</button></div>
 </dialog>
 
 <dialog id="dlgMeal">
   <h2 id="mealTitle">Meal</h2>
+  <div id="rowUrlImport" hidden>
+    <label class="f" for="mUrlImport">Fill in from a recipe link</label>
+    <div class="inline"><input id="mUrlImport" type="url" placeholder="https://…"><button class="btn" id="loadUrl" type="button">Load</button></div>
+  </div>
   <label class="f" for="mName">Name</label><input id="mName" maxlength="120">
-  <label class="f" for="mCat">Category</label><input id="mCat" list="catNames" maxlength="60" placeholder="Pasta, Fish, Soup…">
-  <label class="check"><input type="checkbox" id="mLeft"> Makes leftovers for the next day</label>
+  <div class="row2">
+    <div><label class="f" for="mCat">Category</label><input id="mCat" list="catNames" maxlength="60" placeholder="Pasta, Fish, Soup…"></div>
+    <div><label class="f" for="mWeight">How often</label>
+      <select id="mWeight"><option value="2">Favourite (more often)</option><option value="1" selected>Normal</option><option value="0">Rarely</option></select></div>
+  </div>
+  <label class="check"><input type="checkbox" id="mLeft"> Makes leftovers</label>
+  <div id="rowLeftDays" hidden><label class="f" for="mLeftDays">Leftovers last</label>
+    <select id="mLeftDays" style="max-width:10rem"><option value="1">1 day</option><option value="2">2 days</option><option value="3">3 days</option></select></div>
+  <fieldset><legend class="f">Only on these weekdays (none selected = any day)</legend>
+    <div class="days" id="mDays"></div></fieldset>
+  <div class="row2">
+    <div><label class="f" for="mServ">Servings</label><input id="mServ" type="number" min="0" max="99"></div>
+    <div><label class="f" for="mPrep">Preparation (minutes)</label><input id="mPrep" type="number" min="0" max="1440"></div>
+  </div>
   <label class="f" for="mIng">Ingredients (one per line)</label>
-  <textarea id="mIng" placeholder="Minced beef&#10;Onion&#10;500 g tomato sauce"></textarea>
-  <p class="hint">Amounts are optional. Same ingredients across meals are merged, and amounts with the same unit are added up.</p>
+  <textarea id="mIng" placeholder="Minced beef&#10;Onion&#10;500 g tomato sauce&#10;1/2 cucumber"></textarea>
+  <p class="hint">Amounts are optional. Same ingredients across meals are merged, and amounts with the same unit are added up. Servings tell how many people the amounts feed, so the list can be scaled to your household size.</p>
+  <label class="f" for="mUrl">Recipe link</label><input id="mUrl" type="url" maxlength="500" placeholder="https://…">
+  <label class="f" for="mNotes">Notes</label><textarea id="mNotes" style="min-height:4rem" maxlength="2000"></textarea>
   <div class="actions"><button class="btn danger" id="delMeal">Delete</button><span class="sp"></span>
     <button class="btn" data-close>Cancel</button><button class="btn primary" id="saveMeal">Save meal</button></div>
 </dialog>
 
 <dialog id="dlgImport">
   <h2>Import meals</h2>
-  <p class="hint">Paste meals separated by a blank line. Meals whose name already exists are skipped.</p>
+  <p class="hint">Paste meals separated by a blank line. Optional lines: Servings:, Prep:, URL:, Notes:, Weekdays: Mon, Tue, Leftover days:, Weight: favourite/normal/rarely.</p>
   <textarea id="impText" style="min-height:14rem" placeholder="Lasagne | Pasta | yes&#10;- Minced beef&#10;- Onion&#10;- Tomato sauce&#10;- Lasagne sheets&#10;&#10;Fish and chips&#10;Category: Fish&#10;Leftovers: No&#10;Ingredients:&#10;Cod&#10;Potatoes"></textarea>
+  <label class="check"><input type="checkbox" id="impUpdate"> Update meals that already exist (otherwise they are skipped)</label>
   <div class="actions"><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="runImport">Import</button></div>
 </dialog>
 
@@ -215,28 +316,44 @@ const pad=n=>String(n).padStart(2,'0');
 const iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const parseD=s=>{const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)};
 const addDays=(d,n)=>new Date(d.getFullYear(),d.getMonth(),d.getDate()+n);
-const monday=d=>addDays(d,-((d.getDay()+6)%7));
 const short=d=>d.toLocaleDateString(undefined,{day:'numeric',month:'short'});
 function isoWeek(d){const t=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));t.setUTCDate(t.getUTCDate()+4-(t.getUTCDay()||7));return Math.ceil(((t-Date.UTC(t.getUTCFullYear(),0,1))/864e5+1)/7)}
 async function api(path,opt={}){
-  const o={headers:{'Content-Type':'application/json'},...opt};
+  const o={...opt,headers:{'Content-Type':'application/json','X-Requested-With':'fetch',...(opt.headers||{})}};
   if(o.body&&typeof o.body!=='string')o.body=JSON.stringify(o.body);
   const r=await fetch('/api'+path,o);
   const data=(r.headers.get('content-type')||'').includes('json')?await r.json():await r.text();
   if(!r.ok)throw new Error(data.error||'Something went wrong.');
   return data;
 }
-let tTimer;function toast(msg){const t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(tTimer);tTimer=setTimeout(()=>t.style.display='none',4500)}
+let tTimer;function toast(msg){const t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(tTimer);tTimer=setTimeout(()=>t.style.display='none',6000)}
 const guard=fn=>async(...a)=>{try{await fn(...a)}catch(e){toast(e.message)}};
 
-let meals=[],cur=new Date(),weekStart=monday(new Date()),plan={},dayKey=null,editId=null;
+let cfg={gap_days:21,url_import:false},S={household:0,week_start:0,pantry:[],units:[],slots:[],quotas:[]};
+let meals=[],cur=new Date(),plan={},dayKey=null,editId=null,tab='calendar',weeksN=1,weekStart=new Date();
 cur=new Date(cur.getFullYear(),cur.getMonth(),1);
+const startOfWeek=d=>addDays(d,-(S.week_start===6?d.getDay():(d.getDay()+6)%7));
+const weekNo=w=>isoWeek(S.week_start===6?addDays(w,1):w);
+const DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
-/* ---------- tabs ---------- */
-function showTab(t){
+/* ---------- tabs and address ---------- */
+function setHash(){
+  const h=tab==='calendar'?`#calendar/${cur.getFullYear()}-${pad(cur.getMonth()+1)}`:tab==='shopping'?`#shopping/${iso(weekStart)}`:'#'+tab;
+  history.replaceState(null,'',h);
+}
+function readHash(){
+  const [t,arg]=location.hash.slice(1).split('/');
+  if(!['calendar','shopping','meals','settings'].includes(t))return;
+  tab=t;
+  if(t==='calendar'&&/^\d{4}-\d\d$/.test(arg||'')){const [y,m]=arg.split('-').map(Number);cur=new Date(y,m-1,1)}
+  if(t==='shopping'&&/^\d{4}-\d\d-\d\d$/.test(arg||''))weekStart=startOfWeek(parseD(arg));
+}
+async function showTab(t){
+  tab=t;
   $$('.view').forEach(v=>v.classList.toggle('active',v.id==='v-'+t));
   $$('nav button').forEach(b=>{if(b.dataset.tab===t)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});
-  ({calendar:renderCalendar,shopping:renderShopping,meals:renderMeals})[t]();
+  setHash();
+  await ({calendar:renderCalendar,shopping:renderShopping,meals:async()=>renderMeals(),settings:async()=>fillSettings()})[t]();
 }
 $$('nav button').forEach(b=>b.onclick=guard(()=>showTab(b.dataset.tab)));
 $$('[data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());
@@ -251,17 +368,24 @@ async function loadMeals(){
   sel.innerHTML='<option value="">All categories</option>'+cats.map(c=>`<option>${esc(c)}</option>`).join('');
   sel.value=cats.includes(v)?v:'';
 }
+async function refreshUndo(){try{$('#undoPlan').hidden=!(await api('/undo')).available}catch{}}
 
 /* ---------- calendar ---------- */
+let calReq=0;
 async function renderCalendar(){
-  const y=cur.getFullYear(),m=cur.getMonth();
+  const id=++calReq,y=cur.getFullYear(),m=cur.getMonth();
   $('#monthTitle').textContent=cur.toLocaleDateString(undefined,{month:'long',year:'numeric'});
-  const start=monday(new Date(y,m,1)),end=addDays(monday(new Date(y,m+1,0)),6);
-  const rows=await api(`/plan?start=${iso(start)}&end=${iso(end)}`);
+  const order=S.week_start===6?[6,0,1,2,3,4,5]:[0,1,2,3,4,5,6];
+  $('#dows').innerHTML='<div></div>'+order.map(i=>`<div>${DAYS[i]}</div>`).join('');
+  const start=startOfWeek(new Date(y,m,1)),end=addDays(startOfWeek(new Date(y,m+1,0)),6);
+  $('#calBox').classList.add('loading');
+  let rows;
+  try{rows=await api(`/plan?start=${iso(start)}&end=${iso(end)}`)}finally{if(id===calReq)$('#calBox').classList.remove('loading')}
+  if(id!==calReq)return; // a newer render has taken over
   plan=Object.fromEntries(rows.map(r=>[r.day,r]));
   const today=iso(new Date());let h='';
   for(let w=start;w<=end;w=addDays(w,7)){
-    const wn=isoWeek(w);
+    const wn=weekNo(w);
     h+=`<div class="week"><button class="wk" data-week="${iso(w)}" title="Shopping list for week ${wn}"><span class="s">W${wn}</span><span class="l">Week ${wn} · Shopping list</span></button>`;
     for(let i=0;i<7;i++){
       const d=addDays(w,i),k=iso(d);
@@ -269,17 +393,29 @@ async function renderCalendar(){
       const e=plan[k];let body='';
       if(e)body=e.kind==='leftover'?`<div class="meal">Leftovers from ${esc(e.name)}</div>`
         :`<div class="meal">${esc(e.name)}</div>${e.category?`<div class="cat">${esc(e.category)}</div>`:''}`;
-      h+=`<div class="day ${e?e.kind:'empty'}${k===today?' today':''}" data-day="${k}" tabindex="0" role="button" aria-label="${esc(d.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'}))}"><div class="dn"><span class="dow">${d.toLocaleDateString(undefined,{weekday:'short'})}</span><span>${d.getDate()}</span></div><div>${body}</div></div>`;
+      h+=`<div class="day ${e?e.kind:'empty'}${k===today?' today':''}" data-day="${k}" tabindex="0" role="button"${e&&e.kind!=='leftover'?' draggable="true"':''} aria-label="${esc(d.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'}))}${e&&e.locked?', pinned':''}">${e&&e.locked?'<span class="pin" title="Pinned">📌</span>':''}<div class="dn"><span class="dow">${d.toLocaleDateString(undefined,{weekday:'short'})}</span><span>${d.getDate()}</span></div><div>${body}</div></div>`;
     }
     h+='</div>';
   }
   $('#cal').innerHTML=h;
+  setHash();
 }
 $('#cal').addEventListener('click',e=>{
   const wk=e.target.closest('.wk');if(wk){weekStart=parseD(wk.dataset.week);return showTab('shopping')}
   const d=e.target.closest('.day[data-day]');if(d)openDay(d.dataset.day);
 });
 $('#cal').addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&e.target.matches('.day[data-day]')){e.preventDefault();openDay(e.target.dataset.day)}});
+let dragDay=null;
+const dayOf=e=>e.target.closest&&e.target.closest('.day[data-day]');
+$('#cal').addEventListener('dragstart',e=>{const d=dayOf(e);if(!d)return;dragDay=d.dataset.day;e.dataTransfer.setData('text/plain',dragDay);e.dataTransfer.effectAllowed='move'});
+$('#cal').addEventListener('dragover',e=>{const d=dayOf(e);if(dragDay&&d){e.preventDefault();$$('.dropping').forEach(x=>x.classList.remove('dropping'));d.classList.add('dropping')}});
+$('#cal').addEventListener('dragend',()=>{dragDay=null;$$('.dropping').forEach(x=>x.classList.remove('dropping'))});
+$('#cal').addEventListener('drop',guard(async e=>{
+  const t=dayOf(e);if(!t||!dragDay)return;
+  e.preventDefault();const a=dragDay,b=t.dataset.day;dragDay=null;
+  if(a===b)return;
+  await api('/plan/swap',{method:'POST',body:{a,b}});await renderCalendar();
+}));
 $('#prevM').onclick=guard(()=>{cur=new Date(cur.getFullYear(),cur.getMonth()-1,1);return renderCalendar()});
 $('#nextM').onclick=guard(()=>{cur=new Date(cur.getFullYear(),cur.getMonth()+1,1);return renderCalendar()});
 $('#todayM').onclick=guard(()=>{const n=new Date();cur=new Date(n.getFullYear(),n.getMonth(),1);return renderCalendar()});
@@ -289,6 +425,7 @@ function syncDayType(){
   const t=$('#dayType').value;
   $('#rowMeal').hidden=!(t==='meal'||t==='leftover');
   $('#rowNote').hidden=t!=='custom';
+  $('#rowPin').hidden=t==='clear';
   $('#dayMealLabel').textContent=t==='leftover'?'Leftovers from':'Meal';
 }
 $('#dayType').onchange=syncDayType;
@@ -298,21 +435,29 @@ function openDay(k){
   $('#dayType').value=e?e.kind:'meal';
   $('#dayMeal').value=e&&e.kind!=='custom'?e.name:'';
   $('#dayNote').value=e&&e.kind==='custom'?e.name:'';
+  $('#dayPin').checked=!!(e&&e.locked);
+  $('#swapWith').value='';
   syncDayType();$('#dlgDay').showModal();
 }
 $('#saveDay').onclick=guard(async()=>{
-  const t=$('#dayType').value;let body={kind:'clear'};
-  if(t==='custom')body={kind:'custom',label:$('#dayNote').value};
+  const t=$('#dayType').value,locked=$('#dayPin').checked;let body={kind:'clear'};
+  if(t==='custom')body={kind:'custom',label:$('#dayNote').value,locked};
   else if(t!=='clear'){
     const name=$('#dayMeal').value.trim().toLowerCase(),m=meals.find(x=>x.name.toLowerCase()===name);
     if(!m)throw new Error('Pick a meal from the suggestions.');
-    body={kind:t,meal_id:m.id};
+    body={kind:t,meal_id:m.id,locked};
   }
-  await api('/plan/'+dayKey,{method:'PUT',body});
+  const r=await api('/plan/'+dayKey,{method:'PUT',body});
   $('#dlgDay').close();await renderCalendar();
+  if(r.skipped&&r.skipped.length)toast(`Leftovers could not be reserved on ${r.skipped.map(s=>short(parseD(s))).join(', ')}, because that day is already planned.`);
 });
 $('#reroll').onclick=guard(async()=>{
-  await api('/generate',{method:'POST',body:{start:dayKey,end:dayKey,replace:true}});
+  await api('/generate',{method:'POST',body:{start:dayKey,end:dayKey,replace:true,reroll:true}});
+  $('#dlgDay').close();await renderCalendar();refreshUndo();
+});
+$('#swapBtn').onclick=guard(async()=>{
+  const b=$('#swapWith').value;if(!b)throw new Error('Choose the day to swap with.');
+  await api('/plan/swap',{method:'POST',body:{a:dayKey,b}});
   $('#dlgDay').close();await renderCalendar();
 });
 
@@ -320,81 +465,154 @@ $('#reroll').onclick=guard(async()=>{
 $('#openGen').onclick=()=>{
   $('#genMonth').textContent=cur.toLocaleDateString(undefined,{month:'long',year:'numeric'});
   $('#genWeek').value=iso(new Date());
+  $('#genHint').textContent=`Meals come from your whole list. None repeats within ${cfg.gap_days} days, and a meal with leftovers fills the following day(s).`;
   $('#dlgGen').showModal();
 };
 $$('[name=scope]').forEach(r=>r.onchange=()=>$('#rowWeek').hidden=$('[name=scope]:checked').value!=='week');
 $('#runGen').onclick=guard(async()=>{
   let s,e;
   if($('[name=scope]:checked').value==='month'){s=new Date(cur.getFullYear(),cur.getMonth(),1);e=new Date(cur.getFullYear(),cur.getMonth()+1,0)}
-  else{if(!$('#genWeek').value)throw new Error('Choose a date in the week.');s=monday(parseD($('#genWeek').value));e=addDays(s,6)}
-  const r=await api('/generate',{method:'POST',body:{start:iso(s),end:iso(e),replace:$('#genMode').value==='replace'}});
+  else{if(!$('#genWeek').value)throw new Error('Choose a date in the week.');s=startOfWeek(parseD($('#genWeek').value));e=addDays(s,6)}
+  const replace=$('#genMode').value==='replace';
+  if(replace&&!confirm('Replace every unpinned day in this range? You can undo this right afterwards.'))return;
+  const r=await api('/generate',{method:'POST',body:{start:iso(s),end:iso(e),replace}});
   $('#dlgGen').close();
   if(s.getFullYear()!==cur.getFullYear()||s.getMonth()!==cur.getMonth()){cur=new Date(s.getFullYear(),s.getMonth(),1)}
-  await renderCalendar();
-  toast(r.planned?`Planned ${r.planned} day${r.planned===1?'':'s'}.`+(r.reused?` ${r.reused} meal${r.reused===1?'':'s'} had to repeat within 21 days. Add more meals to avoid this.`:''):'Every day in that range already has a plan.');
+  await renderCalendar();refreshUndo();
+  toast(r.planned?`Planned ${r.planned} day${r.planned===1?'':'s'}.`+(r.reused?` ${r.reused} meal${r.reused===1?'':'s'} had to repeat within ${cfg.gap_days} days. Add more meals to avoid this.`:'')+(r.skipped_locked?` ${r.skipped_locked} pinned day${r.skipped_locked===1?'':'s'} kept.`:''):'Every day in that range already has a plan.');
+});
+$('#undoPlan').onclick=guard(async()=>{
+  await api('/undo',{method:'POST'});await renderCalendar();await refreshUndo();toast('The last planning was undone.');
 });
 
 /* ---------- shopping ---------- */
-let shopData=null;
+let shopData=null,shopReq=0;
 async function renderShopping(){
-  const ws=iso(weekStart),we=addDays(weekStart,6);
-  $('#weekTitle').textContent=`${short(weekStart)} – ${short(we)} · Week ${isoWeek(weekStart)}`;
-  shopData=await api('/shopping?week='+ws);
-  let saved={};try{saved=JSON.parse(localStorage.getItem('chk:'+ws)||'{}')}catch{}
-  if(!shopData.items.length){
-    $('#shop').innerHTML='<p class="empty-note">No meals are planned for this week, so there is nothing to buy yet. Plan meals from the Calendar.</p>';return;
-  }
-  $('#shop').innerHTML=`<ul class="list">${shopData.items.map(i=>`<li><label><input type="checkbox" data-k="${esc(i.key)}"${saved[i.key]?' checked':''}><span class="n">${esc(i.name)}</span><span class="a">${esc(i.amount)}</span></label></li>`).join('')}</ul>
-  <p class="based">For: ${shopData.meals.map(esc).join(', ')}. Leftover days add nothing.</p>`;
+  const id=++shopReq,we=addDays(weekStart,7*weeksN-1);
+  $('#weekTitle').textContent=`${short(weekStart)} – ${short(we)} · Week ${weekNo(weekStart)}${weeksN>1?'+':''}`;
+  $('#weeksSel').value=String(weeksN);
+  const d=await api(`/shopping?week=${iso(weekStart)}&weeks=${weeksN}`);
+  if(id!==shopReq)return;
+  shopData=d;setHash();
+  let h='';
+  if(!d.items.length&&!d.extras.length)h='<p class="empty-note">No meals are planned for this period, so there is nothing to buy yet. Plan meals from the Calendar.</p>';
+  if(d.items.length)h+=`<ul class="list">${d.items.map(i=>`<li><label><input type="checkbox" data-k="${esc(i.key)}"${i.checked?' checked':''}><span class="n">${esc(i.name)}</span><span class="a">${esc(i.amount)}</span></label></li>`).join('')}</ul>`;
+  if(d.extras.length)h+=`<ul class="list">${d.extras.map(x=>`<li><label><input type="checkbox" data-k="extra:${x.id}"${x.checked?' checked':''}><span class="n">${esc(x.name)}</span></label><button class="rm" data-ex="${x.id}" aria-label="Remove ${esc(x.name)}">×</button></li>`).join('')}</ul>`;
+  if(d.meals.length)h+=`<p class="based">For: ${d.meals.map(esc).join(', ')}. Leftover days add nothing.${d.hidden?` ${d.hidden} pantry item${d.hidden===1?'':'s'} hidden.`:''}${d.household?` Amounts are scaled to ${d.household} people where a meal states its servings.`:''}</p>`;
+  $('#shop').innerHTML=h;
 }
-$('#shop').addEventListener('change',e=>{
-  const ws=iso(weekStart);let s={};try{s=JSON.parse(localStorage.getItem('chk:'+ws)||'{}')}catch{}
-  s[e.target.dataset.k]=e.target.checked;try{localStorage.setItem('chk:'+ws,JSON.stringify(s))}catch{}
-});
-$('#prevW').onclick=guard(()=>{weekStart=addDays(weekStart,-7);return renderShopping()});
-$('#nextW').onclick=guard(()=>{weekStart=addDays(weekStart,7);return renderShopping()});
+$('#shop').addEventListener('change',guard(async e=>{
+  if(!e.target.dataset.k||!shopData)return;
+  try{await api('/shopping/check',{method:'PUT',body:{scope:shopData.scope,key:e.target.dataset.k,checked:e.target.checked}})}
+  catch(err){e.target.checked=!e.target.checked;throw err}
+}));
+$('#shop').addEventListener('click',guard(async e=>{
+  const b=e.target.closest('.rm');if(!b)return;
+  await api('/shopping/extras/'+b.dataset.ex,{method:'DELETE'});await renderShopping();
+}));
+$('#extraForm').addEventListener('submit',guard(async e=>{
+  e.preventDefault();const name=$('#extraName').value.trim();if(!name||!shopData)return;
+  await api('/shopping/extras',{method:'POST',body:{scope:shopData.scope,name}});
+  $('#extraName').value='';await renderShopping();
+}));
+$('#prevW').onclick=guard(()=>{weekStart=addDays(weekStart,-7*weeksN);return renderShopping()});
+$('#nextW').onclick=guard(()=>{weekStart=addDays(weekStart,7*weeksN);return renderShopping()});
+$('#weeksSel').onchange=guard(()=>{weeksN=+$('#weeksSel').value;return renderShopping()});
 $('#copyList').onclick=guard(async()=>{
-  if(!shopData||!shopData.items.length)throw new Error('The list is empty.');
-  const txt=shopData.items.map(i=>`- ${i.name}${i.amount?' ('+i.amount+')':''}`).join('\n');
+  if(!shopData||!(shopData.items.length||shopData.extras.length))throw new Error('The list is empty.');
+  const txt=[...shopData.items.map(i=>`- ${i.name}${i.amount?' ('+i.amount+')':''}`),...shopData.extras.map(x=>`- ${x.name}`)].join('\n');
   try{await navigator.clipboard.writeText(txt);toast('List copied.')}catch{toast('Copy is not available here. Use Print instead.')}
 });
 
 /* ---------- meals ---------- */
 function renderMeals(){
-  const q=$('#q').value.trim().toLowerCase(),c=$('#catFilter').value;
+  const q=$('#q').value.trim().toLowerCase(),c=$('#catFilter').value,sort=$('#sortBy').value;
   const list=meals.filter(m=>(!c||m.category===c)&&(!q||m.name.toLowerCase().includes(q)));
+  const byName=(a,b)=>a.name.localeCompare(b.name);
+  if(sort==='oldest')list.sort((a,b)=>(a.last_served||'').localeCompare(b.last_served||'')||byName(a,b));
+  else if(sort==='never')list.sort((a,b)=>(a.times_served?1:0)-(b.times_served?1:0)||byName(a,b));
+  else if(sort==='most')list.sort((a,b)=>b.times_served-a.times_served||byName(a,b));
   $('#mealCount').textContent=`${list.length} of ${meals.length} meals`;
-  $('#mealList').innerHTML=list.length?list.map(m=>`<button class="mrow" data-id="${m.id}"><span class="n">${esc(m.name)}</span><span class="m">${esc(m.category)}${m.leftovers?' · leftovers':''} · ${m.ingredients.length} ingredient${m.ingredients.length===1?'':'s'}</span></button>`).join('')
+  const meta=m=>[m.category,m.leftovers?`leftovers ${m.leftover_days} day${m.leftover_days===1?'':'s'}`:'',m.prep_minutes?`${m.prep_minutes} min`:'',
+    `${m.ingredients.length} ingredient${m.ingredients.length===1?'':'s'}`,m.last_served?`last ${short(parseD(m.last_served))}`:'never served'].filter(Boolean).map(esc).join(' · ');
+  $('#mealList').innerHTML=list.length?list.map(m=>`<button class="mrow" data-id="${m.id}"><span class="n">${m.weight===2?'★ ':''}${esc(m.name)}${m.weight===0?' <span class="m">(rarely)</span>':''}</span><span class="m">${meta(m)}</span></button>`).join('')
     :`<p class="empty-note" style="padding:1rem">${meals.length?'No meals match.':'No meals yet. Add one, or import a list.'}</p>`;
 }
-$('#q').oninput=renderMeals;$('#catFilter').onchange=renderMeals;
+$('#q').oninput=renderMeals;$('#catFilter').onchange=renderMeals;$('#sortBy').onchange=renderMeals;
+$('#mDays').innerHTML=DAYS.map((n,i)=>`<label class="check"><input type="checkbox" value="${i}"> ${n}</label>`).join('');
+$('#mLeft').onchange=()=>$('#rowLeftDays').hidden=!$('#mLeft').checked;
 $('#mealList').addEventListener('click',e=>{const b=e.target.closest('.mrow');if(b)openMeal(meals.find(m=>m.id==b.dataset.id))});
 function openMeal(m){
   editId=m?m.id:null;
   $('#mealTitle').textContent=m?'Edit meal':'Add meal';
   $('#mName').value=m?m.name:'';$('#mCat').value=m?m.category:'';
-  $('#mLeft').checked=!!(m&&m.leftovers);$('#mIng').value=m?m.ingredients.join('\n'):'';
+  $('#mWeight').value=String(m?m.weight:1);
+  $('#mLeft').checked=!!(m&&m.leftovers);$('#rowLeftDays').hidden=!$('#mLeft').checked;
+  $('#mLeftDays').value=String(m?m.leftover_days:1);
+  $$('#mDays input').forEach(i=>i.checked=!!(m&&m.weekdays.includes(+i.value)));
+  $('#mServ').value=m&&m.servings?m.servings:'';$('#mPrep').value=m&&m.prep_minutes?m.prep_minutes:'';
+  $('#mIng').value=m?m.ingredients.join('\n'):'';$('#mUrl').value=m?m.url:'';$('#mNotes').value=m?m.notes:'';
+  $('#rowUrlImport').hidden=!cfg.url_import||!!m;$('#mUrlImport').value='';
   $('#delMeal').hidden=!m;$('#dlgMeal').showModal();
 }
 $('#addMeal').onclick=()=>openMeal(null);
+$('#loadUrl').onclick=guard(async()=>{
+  const r=await api('/meals/from-url',{method:'POST',body:{url:$('#mUrlImport').value}});
+  $('#mName').value=r.name||'';$('#mCat').value=r.category||'';$('#mIng').value=(r.ingredients||[]).join('\n');
+  $('#mServ').value=r.servings||'';$('#mPrep').value=r.prep_minutes||'';$('#mUrl').value=r.url||'';
+  toast('Recipe loaded. Check it and save.');
+});
 $('#saveMeal').onclick=guard(async()=>{
-  const body={name:$('#mName').value,category:$('#mCat').value,leftovers:$('#mLeft').checked,ingredients:$('#mIng').value};
-  await api(editId?'/meals/'+editId:'/meals',{method:editId?'PUT':'POST',body});
+  const body={name:$('#mName').value,category:$('#mCat').value,leftovers:$('#mLeft').checked,leftover_days:+$('#mLeftDays').value,
+    weight:+$('#mWeight').value,weekdays:$$('#mDays input:checked').map(i=>+i.value),servings:+$('#mServ').value||0,
+    prep_minutes:+$('#mPrep').value||0,ingredients:$('#mIng').value,url:$('#mUrl').value,notes:$('#mNotes').value};
+  const r=await api(editId?'/meals/'+editId:'/meals',{method:editId?'PUT':'POST',body});
   $('#dlgMeal').close();await loadMeals();renderMeals();
+  if(r.skipped&&r.skipped.length)toast(`Leftovers could not be reserved on ${r.skipped.map(s=>short(parseD(s))).join(', ')}, because that day is already planned.`);
 });
 $('#delMeal').onclick=guard(async()=>{
-  if(!confirm('Delete this meal? Days already planned with it keep its name.'))return;
+  if(!confirm('Delete this meal? Days already planned with it keep its name and ingredients.'))return;
   await api('/meals/'+editId,{method:'DELETE'});
   $('#dlgMeal').close();await loadMeals();renderMeals();
 });
 $('#openImport').onclick=()=>{$('#impText').value='';$('#dlgImport').showModal()};
 $('#runImport').onclick=guard(async()=>{
-  const r=await api('/meals/import',{method:'POST',headers:{'Content-Type':'text/plain'},body:$('#impText').value});
+  const r=await api('/meals/import'+($('#impUpdate').checked?'?update=1':''),{method:'POST',headers:{'Content-Type':'text/plain'},body:$('#impText').value});
   $('#dlgImport').close();await loadMeals();renderMeals();
-  toast(`Added ${r.added} meal${r.added===1?'':'s'}`+(r.skipped?`, skipped ${r.skipped} that already exist.`:'.'));
+  toast(`Added ${r.added} meal${r.added===1?'':'s'}`+(r.updated?`, updated ${r.updated}`:'')+(r.skipped?`, skipped ${r.skipped} that already exist.`:'.'));
 });
 
-guard(async()=>{await loadMeals();await renderCalendar()})();
+/* ---------- settings ---------- */
+function fillSettings(){
+  $('#sHousehold').value=S.household;$('#sWeek').value=String(S.week_start);
+  $('#sSlots').value=S.slots.join('\n');$('#sQuotas').value=S.quotas.join('\n');
+  $('#sPantry').value=S.pantry.join('\n');$('#sUnits').value=S.units.join(', ');
+  $('#icsUrl').value=location.origin+'/calendar.ics';
+}
+$('#icsUrl').onfocus=e=>e.target.select();
+$('#setForm').addEventListener('submit',guard(async e=>{
+  e.preventDefault();
+  S=await api('/settings',{method:'PUT',body:{household:+$('#sHousehold').value||0,week_start:+$('#sWeek').value,
+    slots:$('#sSlots').value,quotas:$('#sQuotas').value,pantry:$('#sPantry').value,units:$('#sUnits').value}});
+  weekStart=startOfWeek(weekStart);fillSettings();toast('Settings saved.');
+}));
+$('#restoreFile').onchange=guard(async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  if(!confirm('Restoring replaces ALL current meals, plans and settings with the contents of this file. Continue?'))return;
+  const r=await api('/restore',{method:'POST',body:await f.text()});
+  S=await api('/settings');await loadMeals();fillSettings();refreshUndo();
+  toast(`Restored ${r.meals} meals and ${r.days} planned days.`);
+});
+
+/* ---------- start ---------- */
+guard(async()=>{
+  [cfg,S]=await Promise.all([api('/config'),api('/settings')]);
+  weekStart=startOfWeek(new Date());
+  readHash();
+  await loadMeals();refreshUndo();
+  await showTab(tab);
+})();
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>
 </body>
 </html>

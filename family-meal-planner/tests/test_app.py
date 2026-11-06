@@ -560,7 +560,7 @@ def test_old_shopping_ticks_and_extras_are_pruned(client):
     new_scope = f"{date.today().isoformat()}:1"
     conn = sqlite3.connect(appmod.app.config["DB_PATH"])
     conn.execute("INSERT INTO extras(id,scope,name) VALUES (1,?, 'old soap'), (2,?, 'new soap')", (old_scope, new_scope))
-    conn.execute("INSERT INTO checked VALUES (?, 'leek'), (?, 'extra:1'), (?, 'extra:2'), (?, 'extra:99')",
+    conn.execute("INSERT INTO checked(scope,key) VALUES (?, 'leek'), (?, 'extra:1'), (?, 'extra:2'), (?, 'extra:99')",
                  (old_scope, new_scope, new_scope, new_scope))
     conn.commit()
     conn.close()

@@ -97,6 +97,13 @@ fieldset{border:0;padding:0;margin:.6rem 0}
 .actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1.1rem;align-items:center}
 .hint{font-size:.82rem;color:var(--muted);margin:.3rem 0 0}
 #toast{position:fixed;left:50%;bottom:1rem;transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:.6rem 1rem;border-radius:8px;max-width:90vw;display:none;z-index:20}
+.chips{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.5rem}
+.chip{font:inherit;text-align:left;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:.4rem .6rem;cursor:pointer;display:flex;flex-direction:column;min-height:44px}
+.chip small{color:var(--muted);font-size:.75rem}
+.chip:hover{border-color:var(--blue)}
+.tagline{color:var(--muted);font-size:.78rem}
+.excluded{color:#b3261e;font-size:.78rem}
+.btn.small{min-height:36px;padding:.25rem .6rem;font-size:.85rem}
 .settings{max-width:40rem}
 .settings h3{font:700 1.1rem var(--serif);margin:1.6rem 0 .2rem}
 .settings textarea{min-height:5.5rem}
@@ -205,6 +212,14 @@ fieldset{border:0;padding:0;margin:.6rem 0}
         <textarea id="sQuotas" placeholder="Pasta = 2&#10;Fish = 1"></textarea>
         <p class="hint">Planning avoids more than this many meals of a category in one week, when it can.</p>
 
+        <label class="f" for="sRules">Tag rules (one per line)</label>
+        <textarea id="sRules" placeholder="Mon-Fri = quick&#10;Sat = special"></textarea>
+        <p class="hint">Planning prefers meals with that tag on those weekdays (set tags in the meal form). It never leaves a day empty if no meal has the tag.</p>
+
+        <label class="f" for="sAvoid">Never plan meals containing (one per line)</label>
+        <textarea id="sAvoid" placeholder="peanut&#10;mushroom"></textarea>
+        <p class="hint">For allergies and dislikes. A meal is excluded when the word is one of its tags or appears in its name or ingredients; excluded meals are marked in the Meals list. Days you plan by hand are not affected.</p>
+
         <label class="f" for="sPantry">Things you always have at home (one per line)</label>
         <textarea id="sPantry" placeholder="Salt&#10;Pepper&#10;Olive oil"></textarea>
         <p class="hint">These never show up on the shopping list.</p>
@@ -244,6 +259,7 @@ fieldset{border:0;padding:0;margin:.6rem 0}
 
 <datalist id="mealNames"></datalist>
 <datalist id="catNames"></datalist>
+<datalist id="tagNames"></datalist>
 
 <dialog id="dlgDay">
   <h2 id="dayTitle"></h2>
@@ -261,6 +277,11 @@ fieldset{border:0;padding:0;margin:.6rem 0}
   <div class="inline" style="margin-top:.8rem">
     <div style="flex:1"><label class="f" for="swapWith" style="margin-top:0">Swap with another day</label><input type="date" id="swapWith"></div>
     <button class="btn" id="swapBtn">Swap</button>
+  </div>
+  <div id="rowSuggest">
+    <div class="inline" style="margin-top:.8rem"><button class="btn" id="suggestBtn" type="button">Suggest meals</button>
+      <span class="hint">3 meals that fit this day</span></div>
+    <div class="chips" id="suggestions" aria-live="polite"></div>
   </div>
   <div class="actions">
     <button class="btn" id="reroll">Pick another for me</button><span class="sp"></span>
@@ -298,6 +319,20 @@ fieldset{border:0;padding:0;margin:.6rem 0}
     <select id="mLeftDays" style="max-width:10rem"><option value="1">1 day</option><option value="2">2 days</option><option value="3">3 days</option></select></div>
   <fieldset><legend class="f">Only on these weekdays (none selected = any day)</legend>
     <div class="days" id="mDays"></div></fieldset>
+  <label class="f" for="mTags">Tags</label>
+  <input id="mTags" list="tagNames" maxlength="300" placeholder="quick, vegetarian, kid-friendly">
+  <fieldset><legend class="f">Months it suits (none selected = all year)</legend>
+    <div class="days" id="mMonths"></div>
+    <div class="actions" style="margin-top:.3rem;gap:.3rem">
+      <button class="btn small" type="button" data-season="3,4,5">Spring</button><button class="btn small" type="button" data-season="6,7,8">Summer</button>
+      <button class="btn small" type="button" data-season="9,10,11">Autumn</button><button class="btn small" type="button" data-season="12,1,2">Winter</button>
+      <button class="btn small" type="button" data-season="">All year</button></div>
+    <p class="hint">Seasons are for the northern hemisphere; pick the months yourself if yours differ.</p></fieldset>
+  <div class="row2">
+    <div><label class="f" for="mPrepAhead">Prepare ahead (a reminder)</label><input id="mPrepAhead" maxlength="200" placeholder="Marinate the chicken"></div>
+    <div><label class="f" for="mPrepDays">Remind me</label>
+      <select id="mPrepDays"><option value="1">1 day before</option><option value="2">2 days before</option><option value="3">3 days before</option></select></div>
+  </div>
   <div class="row2">
     <div><label class="f" for="mServ">Servings</label><input id="mServ" type="number" min="0" max="99"></div>
     <div><label class="f" for="mPrep">Preparation (minutes)</label><input id="mPrep" type="number" min="0" max="1440"></div>
@@ -368,6 +403,8 @@ async function showTab(t){
   await ({calendar:renderCalendar,shopping:renderShopping,meals:async()=>renderMeals(),settings:async()=>fillSettings()})[t]();
 }
 $$('nav button').forEach(b=>b.onclick=guard(()=>showTab(b.dataset.tab)));
+// address edited by hand, or browser back/forward (setHash uses replaceState, which does not fire this)
+window.addEventListener('hashchange',guard(async()=>{readHash();await showTab(tab)}));
 $$('[data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());
 
 /* ---------- meals data ---------- */
@@ -376,6 +413,7 @@ async function loadMeals(){
   $('#mealNames').innerHTML=meals.map(m=>`<option value="${esc(m.name)}">`).join('');
   const cats=[...new Set(meals.map(m=>m.category).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   $('#catNames').innerHTML=cats.map(c=>`<option value="${esc(c)}">`).join('');
+  $('#tagNames').innerHTML=[...new Set(meals.flatMap(m=>m.tags))].sort().map(t=>`<option value="${esc(t)}">`).join('');
   const sel=$('#catFilter'),v=sel.value;
   sel.innerHTML='<option value="">All categories</option>'+cats.map(c=>`<option>${esc(c)}</option>`).join('');
   sel.value=cats.includes(v)?v:'';
@@ -441,6 +479,7 @@ function syncDayType(){
   $('#rowMeal').hidden=!(t==='meal'||t==='leftover');
   $('#rowNote').hidden=t!=='custom';
   $('#rowPin').hidden=t==='clear';
+  $('#rowSuggest').hidden=t!=='meal';
   $('#dayMealLabel').textContent=t==='leftover'?'Leftovers from':'Meal';
 }
 $('#dayType').onchange=syncDayType;
@@ -451,7 +490,7 @@ function openDay(k){
   $('#dayMeal').value=e&&e.kind!=='custom'?e.name:'';
   $('#dayNote').value=e&&e.kind==='custom'?e.name:'';
   $('#dayPin').checked=!!(e&&e.locked);
-  $('#swapWith').value='';
+  $('#swapWith').value='';$('#suggestions').innerHTML='';
   syncDayType();$('#dlgDay').showModal();
 }
 $('#saveDay').onclick=guard(async()=>{
@@ -468,6 +507,15 @@ $('#saveDay').onclick=guard(async()=>{
 $('#reroll').onclick=guard(async()=>{
   await api('/generate',{method:'POST',body:{start:dayKey,end:dayKey,replace:true,reroll:true}});
   $('#dlgDay').close();await renderCalendar();refreshUndo();
+});
+$('#suggestBtn').onclick=guard(async()=>{
+  const r=await api(`/suggest?day=${dayKey}&n=3&today=${iso(new Date())}`);
+  $('#suggestions').innerHTML=r.length?r.map(x=>`<button type="button" class="chip" data-name="${esc(x.name)}"><strong>${esc(x.name)}</strong><small>${esc(x.repeat?'repeats a recent meal':x.why.slice(0,2).join(' · '))}</small></button>`).join('')
+    :'<p class="hint">There are no meals to suggest. Add some in the Meals tab.</p>';
+});
+$('#suggestions').addEventListener('click',e=>{
+  const b=e.target.closest('.chip');if(!b)return;
+  $('#dayType').value='meal';$('#dayMeal').value=b.dataset.name;syncDayType();
 });
 $('#swapBtn').onclick=guard(async()=>{
   const b=$('#swapWith').value;if(!b)throw new Error('Choose the day to swap with.');
@@ -541,18 +589,26 @@ $('#copyList').onclick=guard(async()=>{
 /* ---------- meals ---------- */
 function renderMeals(){
   const q=$('#q').value.trim().toLowerCase(),c=$('#catFilter').value,sort=$('#sortBy').value;
-  const list=meals.filter(m=>(!c||m.category===c)&&(!q||m.name.toLowerCase().includes(q)));
+  const list=meals.filter(m=>(!c||m.category===c)&&(!q||m.name.toLowerCase().includes(q)||m.tags.some(t=>t.includes(q))));
   const byName=(a,b)=>a.name.localeCompare(b.name);
   if(sort==='oldest')list.sort((a,b)=>(a.last_served||'').localeCompare(b.last_served||'')||byName(a,b));
   else if(sort==='never')list.sort((a,b)=>(a.times_served?1:0)-(b.times_served?1:0)||byName(a,b));
   else if(sort==='most')list.sort((a,b)=>b.times_served-a.times_served||byName(a,b));
   $('#mealCount').textContent=`${list.length} of ${meals.length} meals`;
   const meta=m=>[m.category,m.leftovers?`leftovers ${m.leftover_days} day${m.leftover_days===1?'':'s'}`:'',m.prep_minutes?`${m.prep_minutes} min`:'',
-    `${m.ingredients.length} ingredient${m.ingredients.length===1?'':'s'}`,m.last_served?`last ${short(parseD(m.last_served))}`:'never served'].filter(Boolean).map(esc).join(' · ');
+    `${m.ingredients.length} ingredient${m.ingredients.length===1?'':'s'}`,m.last_served?`last ${short(parseD(m.last_served))}`:'never served'].filter(Boolean).map(esc).join(' · ')
+    +(m.tags.length?`<br><span class="tagline">${m.tags.map(esc).join(' · ')}</span>`:'')
+    +(m.avoided?`<br><span class="excluded">not planned automatically: contains “${esc(m.avoided)}”</span>`:'');
   $('#mealList').innerHTML=list.length?list.map(m=>`<button class="mrow" data-id="${m.id}"><span class="n">${m.weight===2?'★ ':''}${esc(m.name)}${m.weight===0?' <span class="m">(rarely)</span>':''}</span><span class="m">${meta(m)}</span></button>`).join('')
     :`<p class="empty-note" style="padding:1rem">${meals.length?'No meals match.':'No meals yet. Add one, or import a list.'}</p>`;
 }
 $('#q').oninput=renderMeals;$('#catFilter').onchange=renderMeals;$('#sortBy').onchange=renderMeals;
+const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+$('#mMonths').innerHTML=MONTHS.map((n,i)=>`<label class="check"><input type="checkbox" value="${i+1}"> ${n}</label>`).join('');
+$$('[data-season]').forEach(b=>b.onclick=()=>{
+  const set=b.dataset.season?b.dataset.season.split(','):[];
+  $$('#mMonths input').forEach(i=>{i.checked=set.length?(i.checked||set.includes(i.value)):false});
+});
 $('#mDays').innerHTML=DAYS.map((n,i)=>`<label class="check"><input type="checkbox" value="${i}"> ${n}</label>`).join('');
 $('#mLeft').onchange=()=>$('#rowLeftDays').hidden=!$('#mLeft').checked;
 $('#mealList').addEventListener('click',e=>{const b=e.target.closest('.mrow');if(b)openMeal(meals.find(m=>m.id==b.dataset.id))});
@@ -564,6 +620,9 @@ function openMeal(m){
   $('#mLeft').checked=!!(m&&m.leftovers);$('#rowLeftDays').hidden=!$('#mLeft').checked;
   $('#mLeftDays').value=String(m?m.leftover_days:1);
   $$('#mDays input').forEach(i=>i.checked=!!(m&&m.weekdays.includes(+i.value)));
+  $('#mTags').value=m?m.tags.join(', '):'';
+  $$('#mMonths input').forEach(i=>i.checked=!!(m&&m.months.includes(+i.value)));
+  $('#mPrepAhead').value=m?m.prep_ahead:'';$('#mPrepDays').value=String(m?m.prep_ahead_days:1);
   $('#mServ').value=m&&m.servings?m.servings:'';$('#mPrep').value=m&&m.prep_minutes?m.prep_minutes:'';
   $('#mIng').value=m?m.ingredients.join('\n'):'';$('#mUrl').value=m?m.url:'';$('#mNotes').value=m?m.notes:'';
   $('#rowUrlImport').hidden=!cfg.url_import||!!m;$('#mUrlImport').value='';
@@ -579,7 +638,8 @@ $('#loadUrl').onclick=guard(async()=>{
 $('#saveMeal').onclick=guard(async()=>{
   const body={name:$('#mName').value,category:$('#mCat').value,leftovers:$('#mLeft').checked,leftover_days:+$('#mLeftDays').value,
     weight:+$('#mWeight').value,weekdays:$$('#mDays input:checked').map(i=>+i.value),servings:+$('#mServ').value||0,
-    prep_minutes:+$('#mPrep').value||0,ingredients:$('#mIng').value,url:$('#mUrl').value,notes:$('#mNotes').value,today:iso(new Date())};
+    prep_minutes:+$('#mPrep').value||0,ingredients:$('#mIng').value,url:$('#mUrl').value,notes:$('#mNotes').value,today:iso(new Date()),
+    tags:$('#mTags').value,months:$$('#mMonths input:checked').map(i=>+i.value),prep_ahead:$('#mPrepAhead').value,prep_ahead_days:+$('#mPrepDays').value};
   const r=await api(editId?'/meals/'+editId:'/meals',{method:editId?'PUT':'POST',body});
   $('#dlgMeal').close();await loadMeals();renderMeals();refreshUndo();warnSkipped(r);
 });
@@ -600,6 +660,7 @@ function fillSettings(){
   $('#sHousehold').value=S.household;$('#sWeek').value=String(S.week_start);
   $('#sSlots').value=S.slots.join('\n');$('#sQuotas').value=S.quotas.join('\n');
   $('#sPantry').value=S.pantry.join('\n');$('#sUnits').value=S.units.join(', ');
+  $('#sRules').value=S.rules.join('\n');$('#sAvoid').value=S.avoid.join('\n');
   $('#sSyn').value=S.synonyms.join('\n');$('#sUnitSys').value=S.unit_system;
   $('#icsUrl').value=location.origin+'/calendar.ics';
   $('#pwaStatus').textContent=window.isSecureContext&&'serviceWorker' in navigator
@@ -612,8 +673,8 @@ $('#setForm').addEventListener('submit',guard(async e=>{
   if(+$('#sWeek').value!==S.week_start&&!confirm('Changing the first day of the week resets the ticks on shopping lists (extra items are kept). Continue?'))return;
   S=await api('/settings',{method:'PUT',body:{household:+$('#sHousehold').value||0,week_start:+$('#sWeek').value,
     slots:$('#sSlots').value,quotas:$('#sQuotas').value,pantry:$('#sPantry').value,units:$('#sUnits').value,
-    synonyms:$('#sSyn').value,unit_system:$('#sUnitSys').value}});
-  weekStart=startOfWeek(weekStart);fillSettings();toast('Settings saved.');
+    synonyms:$('#sSyn').value,unit_system:$('#sUnitSys').value,rules:$('#sRules').value,avoid:$('#sAvoid').value}});
+  weekStart=startOfWeek(weekStart);await loadMeals();fillSettings();toast('Settings saved.');  // meals again: the avoid list marks them
 }));
 $('#restoreFile').onchange=guard(async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;

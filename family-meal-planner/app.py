@@ -67,7 +67,23 @@ V2_STATEMENTS = [
     "CREATE TABLE IF NOT EXISTS extras(id INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL, name TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS plan_meal ON plan(meal_id)",
 ]
-SCHEMA_VERSION = 2
+# schema version 3: rules, lunch, cooks, shopping extras
+V3_COLUMNS = [
+    ("meals", "tags", "TEXT NOT NULL DEFAULT ''"),               # 'quick,vegetarian'
+    ("meals", "months", "TEXT NOT NULL DEFAULT ''"),             # months it suits, '6,7,8'; empty = all year
+    ("meals", "prep_ahead", "TEXT NOT NULL DEFAULT ''"),         # 'Marinate the chicken'
+    ("meals", "prep_ahead_days", "INTEGER NOT NULL DEFAULT 1"),  # shown this many days before
+    ("plan", "cook", "TEXT NOT NULL DEFAULT ''"),                # per-day cook (otherwise the weekday rule)
+    ("checked", "price", "REAL"),                                # price paid for a ticked item
+]
+V3_STATEMENTS = [
+    "CREATE TABLE IF NOT EXISTS plan_lunch(day TEXT PRIMARY KEY, kind TEXT NOT NULL, meal_id INTEGER, "
+    "label TEXT NOT NULL DEFAULT '', ing_snapshot TEXT NOT NULL DEFAULT '')",
+    "CREATE TABLE IF NOT EXISTS aisle_map(key TEXT PRIMARY KEY, aisle TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS item_price(key TEXT PRIMARY KEY, price REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS stock(key TEXT PRIMARY KEY, until TEXT NOT NULL)",
+]
+SCHEMA_VERSION = 3
 
 
 def init_db():
@@ -87,6 +103,14 @@ def init_db():
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
             for stmt in V2_STATEMENTS:
                 conn.execute(stmt)
+        if version < 3:
+            for table, col, ddl in V3_COLUMNS:
+                have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+                if col not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+            for stmt in V3_STATEMENTS:
+                conn.execute(stmt)
+        if version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         prune_shopping(conn)
         conn.commit()
@@ -176,6 +200,50 @@ def parse_weekdays(x):
         if i is not None:
             out.add(i)
     return sorted(out)
+
+
+MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+MONTH_ALIASES = {"maj": 5, "okt": 10}
+
+
+def month_index(tok):
+    tok = tok.strip().lower()
+    if tok.isdigit():
+        return int(tok) if 1 <= int(tok) <= 12 else None
+    if tok[:3] in MONTH_NAMES:
+        return MONTH_NAMES.index(tok[:3]) + 1
+    return MONTH_ALIASES.get(tok[:3])
+
+
+def parse_months(x):
+    """'Jun-Aug' / 'Dec-Feb' (wraps) / '3,4,5' / [6, 7] -> sorted list of month numbers 1..12."""
+    if isinstance(x, str):
+        x = re.split(r"[,;\s]+", re.sub(r"\s*[-–]\s*", "-", x.strip()))
+    out = set()
+    for t in x or []:
+        t = str(t).strip()
+        if not t:
+            continue
+        if "-" in t:
+            lo, _, hi = t.partition("-")
+            a, b = month_index(lo), month_index(hi)
+            if a is None or b is None:
+                continue
+            i = a
+            while True:
+                out.add(i)
+                if i == b:
+                    break
+                i = i % 12 + 1
+        elif month_index(t) is not None:
+            out.add(month_index(t))
+    return sorted(out)
+
+
+def parse_tags(x):
+    if isinstance(x, (list, tuple)):
+        x = ",".join(str(t) for t in x)
+    return sorted({re.sub(r"\s+", " ", t).strip().lower()[:30] for t in re.split(r"[,;\n]+", x or "")} - {""})[:20]
 
 
 def parse_day_set(text):
@@ -370,7 +438,7 @@ def rekey_shopping(c, ws):
 # ---------------------------------------------------------------- meals
 
 COLS = ("name", "category", "leftovers", "ingredients", "weight", "weekdays", "leftover_days",
-        "servings", "prep_minutes", "url", "notes")
+        "servings", "prep_minutes", "url", "notes", "tags", "months", "prep_ahead", "prep_ahead_days")
 
 
 def span_of(r):
@@ -378,7 +446,19 @@ def span_of(r):
     return max(1, min(SPILL, r["leftover_days"])) if r["leftovers"] else 0
 
 
-def meal_dict(r):
+def meal_avoided(m, avoid):
+    """The first avoid-list term that this meal matches (a tag, or a whole word in the name or ingredients), else ''."""
+    if not avoid:
+        return ""
+    tags = {t for t in m["tags"].split(",") if t}
+    text = (m["name"] + "\n" + m["ingredients"]).lower()
+    for term in avoid:
+        if term in tags or re.search(r"\b" + re.escape(term) + r"(?:e?s)?\b", text):
+            return term
+    return ""
+
+
+def meal_dict(r, avoid=()):
     keys = r.keys()
     d = {
         "id": r["id"],
@@ -393,6 +473,11 @@ def meal_dict(r):
         "prep_minutes": r["prep_minutes"],
         "url": r["url"],
         "notes": r["notes"],
+        "tags": [t for t in r["tags"].split(",") if t],
+        "months": [int(x) for x in r["months"].split(",") if x.strip().isdigit()],
+        "prep_ahead": r["prep_ahead"],
+        "prep_ahead_days": max(1, min(3, r["prep_ahead_days"])),
+        "avoided": meal_avoided(r, avoid),
     }
     if "last_served" in keys:
         d["last_served"] = r["last_served"]
@@ -423,6 +508,10 @@ def clean_meal(d):
         "prep_minutes": to_int(d.get("prep_minutes"), 0, 1440, 0),
         "url": url,
         "notes": (d.get("notes") or "").strip()[:2000],
+        "tags": ",".join(parse_tags(d.get("tags"))),
+        "months": ",".join(str(i) for i in parse_months(d.get("months"))),
+        "prep_ahead": re.sub(r"\s+", " ", d.get("prep_ahead") or "").strip()[:200],
+        "prep_ahead_days": to_int(d.get("prep_ahead_days"), 1, 3, 1),
     }
 
 
@@ -444,7 +533,9 @@ def select_meals(c, today):
 
 @app.get("/api/meals")
 def list_meals():
-    return jsonify([meal_dict(r) for r in select_meals(db(), client_today())])
+    c = db()
+    avoid = get_settings(c)["avoid"]
+    return jsonify([meal_dict(r, avoid) for r in select_meals(c, client_today())])
 
 
 @app.post("/api/meals")
@@ -507,7 +598,8 @@ def split_ingredients(s):
 WEIGHT_WORDS = {"rarely": 0, "rare": 0, "normal": 1, "favourite": 2, "favorite": 2}
 EXTRA_KEYS = {"servings": "servings", "prep": "prep_minutes", "prep time": "prep_minutes", "url": "url",
               "link": "url", "notes": "notes", "weekdays": "weekdays", "leftover days": "leftover_days",
-              "weight": "weight"}
+              "weight": "weight", "tags": "tags", "months": "months", "prep ahead": "prep_ahead",
+              "prep ahead days": "prep_ahead_days"}
 
 
 def parse_import(text):
@@ -515,7 +607,8 @@ def parse_import(text):
          Name | Category | yes        followed by '- ingredient' lines
        or
          Name / Category: .. / Leftovers: .. / Ingredients: (list or comma/semicolon separated)
-       Optional extra lines: Servings:, Prep:, URL:, Notes:, Weekdays:, Leftover days:, Weight:"""
+       Optional extra lines: Servings:, Prep:, URL:, Notes:, Weekdays:, Leftover days:, Weight:, Tags:, Months:,
+       Prep ahead:, Prep ahead days:"""
     out = []
     for block in re.split(r"\n\s*\n", text.replace("\r", "").strip()):
         lines = [l.strip() for l in block.split("\n") if l.strip()]
@@ -782,8 +875,13 @@ def load_planning_meals(c, settings):
     syn = build_synonyms(settings.get("synonyms", []))
     pantry = {parse_ingredient(p, (), syn)[0] for p in settings["pantry"]}
     meals = {}
+    avoid = settings.get("avoid", [])
     for r in c.execute("SELECT * FROM meals"):
+        if meal_avoided(r, avoid):
+            continue  # hard rule: allergies and dislikes are never planned or suggested
         m = dict(r)
+        m["tags"] = {t for t in r["tags"].split(",") if t}
+        m["months"] = {int(x) for x in r["months"].split(",") if x.strip().isdigit()}
         m["weekdays"] = {int(x) for x in r["weekdays"].split(",") if x.strip().isdigit()}
         m["span"] = span_of(r)
         m["ingkeys"] = {parse_ingredient(l, (), syn)[0] for l in r["ingredients"].split("\n") if l} - pantry
@@ -823,6 +921,9 @@ def pick(d, cur, meals, S, exclude=()):
     def narrow(pool, ok):  # soft rule: only applied when something is left
         return [m for m in pool if ok(m)] or pool
 
+    pool = narrow(pool, lambda m: not m["months"] or d.month in m["months"])  # in season
+    for tag in sorted({t for days, t in parse_rules(S.get("rules", [])) if d.weekday() in days}):
+        pool = narrow(pool, lambda m, tag=tag: tag in m["tags"])  # e.g. 'Mon-Fri = quick'
     pool = narrow(pool, lambda m: not m["weekdays"] or d.weekday() in m["weekdays"])
     pool = narrow(pool, lambda m: week_cat.get(m["category"].lower(), 0) < quotas.get(m["category"].lower(), 10 ** 6))
     if not forced:
@@ -856,18 +957,25 @@ def snapshot_for_undo(c, lo, hi):
               (json.dumps({"lo": lo.isoformat(), "hi": hi.isoformat(), "rows": rows, "t": time.time()}),))
 
 
+def load_window(c, start, end):
+    """The plan rows around start..end that the planning rules need to look at (gap days before and after)."""
+    lo, hi = start - timedelta(GAP_DAYS + SPILL), end + timedelta(GAP_DAYS + 1 + SPILL)
+    return {
+        date.fromisoformat(r["day"]): dict(r)
+        for r in c.execute("SELECT * FROM plan WHERE day BETWEEN ? AND ?", (lo.isoformat(), hi.isoformat()))
+    }
+
+
 def generate(start, end, replace, reroll=False):
     c = db()
     S = get_settings(c)
     meals = load_planning_meals(c, S)
     if not meals:
+        if c.execute("SELECT 1 FROM meals").fetchone():
+            abort(400, "Every meal is excluded by the avoid list in Settings.")
         abort(400, "Add some meals first.")
     slots = parse_slots(S["slots"])
-    lo, hi = start - timedelta(GAP_DAYS + SPILL), end + timedelta(GAP_DAYS + 1 + SPILL)
-    cur = {
-        date.fromisoformat(r["day"]): dict(r)
-        for r in c.execute("SELECT * FROM plan WHERE day BETWEEN ? AND ?", (lo.isoformat(), hi.isoformat()))
-    }
+    cur = load_window(c, start, end)
     orig = dict(cur)
     snapshot_for_undo(c, start - timedelta(SPILL), end + timedelta(SPILL))
 
@@ -958,6 +1066,42 @@ def load_undo(c):
         c.commit()
         return None
     return snap
+
+
+@app.get("/api/suggest")
+def api_suggest():
+    """A few meals that fit a day, using the same rules as automatic planning."""
+    d = parse_day(request.args.get("day"))
+    n = to_int(request.args.get("n"), 1, 6, 3)
+    c = db()
+    S = get_settings(c)
+    meals = load_planning_meals(c, S)
+    cur = load_window(c, d, d)
+    exclude = {e["meal_id"] for e in [cur.pop(d, None)] if e and e["meal_id"]}  # not the meal that is there now
+    today = client_today().isoformat()
+    last = {r["meal_id"]: r["day"] for r in c.execute(
+        "SELECT meal_id, MAX(day) AS day FROM plan WHERE kind='meal' AND day<=? GROUP BY meal_id", (today,))}
+    wanted = {t for days, t in parse_rules(S["rules"]) if d.weekday() in days}
+    out = []
+    while len(out) < n and any(mid not in exclude for mid in meals):
+        m, forced = pick(d, cur, meals, S, exclude)
+        exclude.add(m["id"])
+        why = []
+        if m["id"] in last:
+            ago = (date.fromisoformat(today) - date.fromisoformat(last[m["id"]])).days
+            why.append("served today" if ago == 0 else "last served 1 day ago" if ago == 1 else f"last served {ago} days ago")
+        else:
+            why.append("never served")
+        if m["weight"] == 2:
+            why.append("a favourite")
+        if m["weekdays"] and d.weekday() in m["weekdays"]:
+            why.append(f"suits {d:%A}s")
+        if m["months"] and d.month in m["months"]:
+            why.append("in season")
+        why += [f"{t} meal for {d:%A}s" for t in sorted(wanted & m["tags"])]
+        out.append({"id": m["id"], "name": m["name"], "category": m["category"], "why": why,
+                    "last_served": last.get(m["id"]), "repeat": bool(forced)})
+    return jsonify(out)
 
 
 @app.post("/api/undo")

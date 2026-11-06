@@ -107,6 +107,25 @@ fieldset{border:0;padding:0;margin:.6rem 0}
 .day .lunch{border-top:1px dotted var(--line);margin-top:.15rem;padding-top:.1rem}
 .excluded{color:#b3261e;font-size:.78rem}
 .btn.small{min-height:36px;padding:.25rem .6rem;font-size:.85rem}
+.tcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:1.1rem 1.4rem;margin-bottom:1rem;max-width:46rem}
+.tcard h2{font:600 .85rem var(--sans);color:var(--muted);margin:0 0 .5rem;text-transform:uppercase;letter-spacing:.05em}
+.tmeal{font:700 clamp(1.9rem,6vw,3rem)/1.1 var(--serif);margin:.2rem 0 .3rem;overflow-wrap:anywhere}
+.tsmall .tmeal{font-size:1.6rem}
+.tmeta{color:var(--muted)}
+.tnote{white-space:pre-wrap;margin:.7rem 0}
+.treminder{background:var(--stripe);border-left:4px solid var(--blue);padding:.5rem .7rem;margin:.6rem 0;border-radius:4px}
+.tlunch{margin:.8rem 0 0;padding-top:.6rem;border-top:1px solid var(--line)}
+.tcard details{margin:.6rem 0}.tcard summary{cursor:pointer;min-height:32px}
+.tcard ul{margin:.3rem 0;padding-left:1.2rem}
+.hsec{max-width:46rem;margin:0 0 1.4rem}
+.hsec h3{font:700 1.1rem var(--serif);margin:0 0 .4rem}
+.hbar{display:grid;grid-template-columns:minmax(6rem,14rem) 1fr 2.5rem;gap:.6rem;align-items:center;margin:.2rem 0;font-size:.9rem}
+.hbar .bar{height:.85rem;background:var(--blue);border-radius:3px;min-width:3px}
+.hbar .n{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+.hday{display:grid;grid-template-columns:7rem 1fr;gap:.2rem .8rem;padding:.35rem 0;border-top:1px solid var(--line)}
+.hday.future{color:var(--muted)}
+.hstats{display:flex;flex-wrap:wrap;gap:.6rem 1.6rem;margin:.2rem 0 1rem}
+.hstats strong{font:700 1.6rem var(--serif);display:block;line-height:1.1}
 .settings{max-width:40rem}
 .settings h3{font:700 1.1rem var(--serif);margin:1.6rem 0 .2rem}
 .settings textarea{min-height:5.5rem}
@@ -134,14 +153,29 @@ fieldset{border:0;padding:0;margin:.6rem 0}
 <header>
   <h1>Meal planner</h1>
   <nav aria-label="Sections">
-    <button data-tab="calendar" aria-current="page">Calendar</button>
+    <button data-tab="today" aria-current="page">Today</button>
+    <button data-tab="calendar">Calendar</button>
     <button data-tab="shopping">Shopping list</button>
     <button data-tab="meals">Meals</button>
+    <button data-tab="history">History</button>
     <button data-tab="settings">Settings</button>
   </nav>
 </header>
 <main>
-  <section id="v-calendar" class="view active">
+  <section id="v-today" class="view active"><div id="todayBox"></div></section>
+
+  <section id="v-history" class="view">
+    <div class="toolbar">
+      <button class="btn" id="prevH" aria-label="Previous month">‹</button>
+      <h2 class="title" id="histTitle" style="font-size:1.7rem"></h2>
+      <button class="btn" id="nextH" aria-label="Next month">›</button>
+      <span class="sp"></span>
+      <button class="btn" onclick="window.print()">Print</button>
+    </div>
+    <div id="histBox"></div>
+  </section>
+
+  <section id="v-calendar" class="view">
     <div class="toolbar">
       <button class="btn" id="prevM" aria-label="Previous month">‹</button>
       <h2 class="title" id="monthTitle"></h2>
@@ -393,21 +427,24 @@ let tTimer;function toast(msg){const t=$('#toast');t.textContent=msg;t.style.dis
 const guard=fn=>async(...a)=>{try{await fn(...a)}catch(e){toast(e.message)}};
 
 let cfg={gap_days:21,url_import:false},S={household:0,week_start:0,pantry:[],units:[],slots:[],quotas:[]};
-let meals=[],cur=new Date(),plan={},dayKey=null,editId=null,tab='calendar',weeksN=1,weekStart=new Date();
+let meals=[],cur=new Date(),plan={},dayKey=null,editId=null,tab='today',weeksN=1,weekStart=new Date();
 cur=new Date(cur.getFullYear(),cur.getMonth(),1);
+let histMonth=new Date(cur);
 const startOfWeek=d=>addDays(d,-(S.week_start===6?d.getDay():(d.getDay()+6)%7));
 const weekNo=w=>isoWeek(S.week_start===6?addDays(w,1):w);
 const DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
 /* ---------- tabs and address ---------- */
 function setHash(){
-  const h=tab==='calendar'?`#calendar/${cur.getFullYear()}-${pad(cur.getMonth()+1)}`:tab==='shopping'?`#shopping/${iso(weekStart)}`:'#'+tab;
+  const ym=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}`;
+  const h=tab==='calendar'?`#calendar/${ym(cur)}`:tab==='history'?`#history/${ym(histMonth)}`:tab==='shopping'?`#shopping/${iso(weekStart)}`:'#'+tab;
   history.replaceState(null,'',h);
 }
 function readHash(){
   const [t,arg]=location.hash.slice(1).split('/');
-  if(!['calendar','shopping','meals','settings'].includes(t))return;
+  if(!['today','calendar','shopping','meals','history','settings'].includes(t))return;
   tab=t;
+  if(t==='history'&&/^\d{4}-\d\d$/.test(arg||'')){const [y,m]=arg.split('-').map(Number);histMonth=new Date(y,m-1,1)}
   if(t==='calendar'&&/^\d{4}-\d\d$/.test(arg||'')){const [y,m]=arg.split('-').map(Number);cur=new Date(y,m-1,1)}
   if(t==='shopping'&&/^\d{4}-\d\d-\d\d$/.test(arg||''))weekStart=startOfWeek(parseD(arg));
 }
@@ -416,7 +453,7 @@ async function showTab(t){
   $$('.view').forEach(v=>v.classList.toggle('active',v.id==='v-'+t));
   $$('nav button').forEach(b=>{if(b.dataset.tab===t)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});
   setHash();
-  await ({calendar:renderCalendar,shopping:renderShopping,meals:async()=>renderMeals(),settings:async()=>fillSettings()})[t]();
+  await ({today:renderToday,calendar:renderCalendar,shopping:renderShopping,meals:async()=>renderMeals(),history:renderHistory,settings:async()=>fillSettings()})[t]();
 }
 $$('nav button').forEach(b=>b.onclick=guard(()=>showTab(b.dataset.tab)));
 // address edited by hand, or browser back/forward (setHash uses replaceState, which does not fire this)
@@ -438,6 +475,61 @@ async function refreshUndo(){try{$('#undoPlan').hidden=!(await api('/undo')).ava
 function warnSkipped(r){
   if(r&&r.skipped&&r.skipped.length)toast(`Leftovers could not be reserved on ${r.skipped.map(s=>short(parseD(s))).join(', ')}, because that day is already planned.`);
 }
+
+/* ---------- today ---------- */
+function mealDetails(m,big){
+  if(!m)return '';
+  const meta=[m.category,m.prep_minutes?`${m.prep_minutes} min`:'',m.servings?`serves ${m.servings}`:'',...m.tags].filter(Boolean).map(esc).join(' · ');
+  return (meta?`<div class="tmeta">${meta}</div>`:'')
+    +(m.notes?`<p class="tnote">${esc(m.notes)}</p>`:'')
+    +(m.url?`<p><a href="${esc(m.url)}" target="_blank" rel="noopener noreferrer">Open the recipe</a></p>`:'')
+    +(big&&m.ingredients.length?`<details><summary>Ingredients (${m.ingredients.length})</summary><ul>${m.ingredients.map(i=>`<li>${esc(i)}</li>`).join('')}</ul></details>`:'');
+}
+function slotTitle(e){return e.kind==='leftover'?`Leftovers from ${e.name}`:e.name}
+function todayCard(d){
+  const big=d.label==='today',dt=parseD(d.day);
+  const head=`${big?'Today':'Tomorrow'} · ${dt.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'})}${d.cook?` · Cook: ${esc(d.cook)}`:''}`;
+  const prep=d.prep.map(p=>`<div class="treminder"><strong>Prepare ${big?'today':'tomorrow'}:</strong> ${esc(p.text)} <span class="tmeta">(for ${esc(p.meal)} on ${esc(short(parseD(p.for_day)))})</span></div>`).join('');
+  const dinner=d.dinner
+    ?`<div class="tmeal">${esc(slotTitle(d.dinner))}</div>${mealDetails(d.dinner.meal,big)}`
+    :`<p class="tmeta">Nothing planned for dinner. <button class="btn small" data-plan="${d.day}">Plan this day</button></p>`;
+  const lunch=d.lunch?`<div class="tlunch"><strong>Lunch:</strong> ${esc(slotTitle(d.lunch))}${d.lunch.meal&&d.lunch.meal.url?` · <a href="${esc(d.lunch.meal.url)}" target="_blank" rel="noopener noreferrer">recipe</a>`:''}</div>`:'';
+  return `<article class="tcard ${big?'':'tsmall'}"><h2>${head}</h2>${prep}${dinner}${lunch}</article>`;
+}
+async function renderToday(){
+  const r=await api('/today?today='+iso(new Date()));
+  $('#todayBox').innerHTML=r.days.map(todayCard).join('');
+  setHash();
+}
+$('#todayBox').addEventListener('click',guard(async e=>{
+  const b=e.target.closest('[data-plan]');if(!b)return;
+  const d=parseD(b.dataset.plan);cur=new Date(d.getFullYear(),d.getMonth(),1);
+  await showTab('calendar');openDay(b.dataset.plan);
+}));
+
+/* ---------- history ---------- */
+let histReq=0;
+function bars(items,label,max){
+  return items.map(i=>`<div class="hbar"><span>${esc(label(i))}</span><span class="bar" style="width:${Math.max(3,Math.round(100*i.count/max))}%"></span><span class="n">${i.count}</span></div>`).join('');
+}
+async function renderHistory(){
+  const id=++histReq,ym=`${histMonth.getFullYear()}-${pad(histMonth.getMonth()+1)}`;
+  $('#histTitle').textContent=histMonth.toLocaleDateString(undefined,{month:'long',year:'numeric'});
+  const s=await api(`/stats?month=${ym}&today=${iso(new Date())}`);
+  if(id!==histReq)return;
+  setHash();
+  const t=s.totals,max=Math.max(1,...s.by_meal.map(m=>m.count),...s.by_category.map(c=>c.count));
+  const slot=(e,pre)=>e?`${pre}${esc(e.kind==='leftover'?'leftovers: '+e.name:e.name)}`:'';
+  $('#histBox').innerHTML=
+    `<div class="hstats"><div><strong>${t.meals_eaten}</strong>meals eaten</div><div><strong>${t.distinct_meals}</strong>different meals</div><div><strong>${t.repeats}</strong>repeats</div></div>`
+    +(s.by_category.length?`<section class="hsec"><h3>By category</h3>${bars(s.by_category,c=>c.category,max)}</section>`:'')
+    +(s.by_meal.length?`<section class="hsec"><h3>Meals</h3>${bars(s.by_meal,m=>m.name,max)}</section>`:'<p class="empty-note">Nothing has been eaten in this month yet.</p>')
+    +(s.days.length?`<section class="hsec"><h3>Day by day</h3>${s.days.map(d=>`<div class="hday${d.future?' future':''}"><span>${esc(parseD(d.day).toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'}))}</span><span>${[slot(d.dinner,''),slot(d.lunch,'Lunch: ')].filter(Boolean).join('<br>')}${d.future?' <em>(planned)</em>':''}</span></div>`).join('')}</section>`:'')
+    +(s.forgotten.length?`<section class="hsec"><h3>Not served for the longest time</h3>${s.forgotten.map(f=>`<div class="hday"><span>${f.days_ago===0?'today':f.days_ago===1?'1 day':f.days_ago+' days'}</span><span>${esc(f.name)}${f.category?` <span class="tmeta">· ${esc(f.category)}</span>`:''}</span></div>`).join('')}</section>`:'')
+    +(s.never.length?`<section class="hsec"><h3>Never served yet</h3><p>${s.never.map(esc).join(', ')}</p></section>`:'');
+}
+$('#prevH').onclick=guard(()=>{histMonth=new Date(histMonth.getFullYear(),histMonth.getMonth()-1,1);return renderHistory()});
+$('#nextH').onclick=guard(()=>{histMonth=new Date(histMonth.getFullYear(),histMonth.getMonth()+1,1);return renderHistory()});
 
 /* ---------- calendar ---------- */
 let calReq=0,calExtra={lunch:{},cook:{},override:{},prep:{}};

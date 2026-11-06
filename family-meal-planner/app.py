@@ -1397,6 +1397,86 @@ def calendar_feed():
     return Response("\r\n".join(out) + "\r\n", mimetype="text/calendar; charset=utf-8")
 
 
+# ---------------------------------------------------------------- today and history
+
+def entry_detail(c, row):
+    """A plan or lunch row with the meal details the Today view shows (None when there is no row)."""
+    if row is None:
+        return None
+    out = {"kind": row["kind"], "name": row["name"], "meal": None}
+    m = c.execute("SELECT * FROM meals WHERE id=?", (row["meal_id"],)).fetchone() if row["meal_id"] else None
+    if m:
+        d = meal_dict(m)
+        keep = ("id", "name", "category", "tags", "prep_minutes", "servings", "notes", "url", "ingredients")
+        out["meal"] = {k: d[k] for k in keep}
+    return out
+
+
+@app.get("/api/today")
+def api_today():
+    """Today and tomorrow: dinner, lunch, cook and the prepare-ahead reminders that are due."""
+    c = db()
+    today = client_today()
+    S = get_settings(c)
+    last = today + timedelta(1)
+    cooks, prep = cook_map(c, today, last, S), prep_reminders(c, today, last)
+    days = []
+    for label, d in (("today", today), ("tomorrow", last)):
+        k = d.isoformat()
+        dinner = c.execute("SELECT p.kind, p.meal_id, COALESCE(m.name, p.label) AS name FROM plan p "
+                           "LEFT JOIN meals m ON m.id = p.meal_id WHERE p.day=?", (k,)).fetchone()
+        lunch = c.execute("SELECT p.kind, p.meal_id, COALESCE(m.name, p.label) AS name FROM plan_lunch p "
+                          "LEFT JOIN meals m ON m.id = p.meal_id WHERE p.day=?", (k,)).fetchone()
+        days.append({"label": label, "day": k, "dinner": entry_detail(c, dinner), "lunch": entry_detail(c, lunch),
+                     "cook": cooks.get(k, ""), "prep": prep.get(k, [])})
+    return jsonify(days=days)
+
+
+@app.get("/api/stats")
+def api_stats():
+    """What was eaten in a month (dinner and lunch), counts per meal and category, and meals that were not served for long."""
+    c = db()
+    today = client_today()
+    month = request.args.get("month") or f"{today:%Y-%m}"
+    m = re.fullmatch(r"(\d{4})-(\d{2})", month)
+    if not m or not 1 <= int(m.group(2)) <= 12:
+        abort(400, "Invalid month.")
+    start = date(int(m.group(1)), int(m.group(2)), 1)
+    end = (start.replace(day=28) + timedelta(4)).replace(day=1) - timedelta(1)
+    part = ("SELECT p.day AS day, '{slot}' AS slot, p.kind AS kind, p.meal_id AS meal_id, COALESCE(m.name, p.label) AS name, "
+            "COALESCE(m.category, '') AS category FROM {t} p LEFT JOIN meals m ON m.id = p.meal_id WHERE p.day BETWEEN ? AND ?")
+    rows = c.execute(
+        f"SELECT * FROM ({part.format(slot='dinner', t='plan')} UNION ALL {part.format(slot='lunch', t='plan_lunch')}) "
+        "ORDER BY day, slot", (start.isoformat(), end.isoformat()) * 2).fetchall()
+    days, by_meal, by_cat, eaten_days = {}, {}, {}, set()
+    for r in rows:
+        e = days.setdefault(r["day"], {"day": r["day"], "future": r["day"] > today.isoformat(), "dinner": None, "lunch": None})
+        e[r["slot"]] = {"kind": r["kind"], "name": r["name"]}
+        if r["kind"] == "meal" and r["day"] <= today.isoformat():
+            eaten_days.add(r["day"])
+            b = by_meal.setdefault(r["meal_id"] or r["name"],
+                                   {"id": r["meal_id"], "name": r["name"], "category": r["category"], "count": 0})
+            b["count"] += 1
+            cat = r["category"] or "Uncategorised"
+            by_cat[cat] = by_cat.get(cat, 0) + 1
+    served = {r["meal_id"]: r["day"] for r in c.execute(
+        f"SELECT meal_id, MAX(day) AS day FROM ({SERVED_SQL}) WHERE day<=? GROUP BY meal_id", (today.isoformat(),))}
+    names = {r["id"]: r for r in c.execute("SELECT id, name, category FROM meals")}
+    forgotten = sorted(
+        ({"id": i, "name": names[i]["name"], "category": names[i]["category"], "last_served": d,
+          "days_ago": (today - date.fromisoformat(d)).days} for i, d in served.items() if i in names),
+        key=lambda x: (-x["days_ago"], x["name"].lower()))[:10]
+    never = sorted((r["name"] for i, r in names.items() if i not in served), key=str.lower)
+    meals_list = sorted(by_meal.values(), key=lambda x: (-x["count"], x["name"].lower()))
+    return jsonify(
+        month=f"{start:%Y-%m}", start=start.isoformat(), end=end.isoformat(),
+        days=[days[k] for k in sorted(days)], by_meal=meals_list,
+        by_category=[{"category": k, "count": v} for k, v in sorted(by_cat.items(), key=lambda kv: (-kv[1], kv[0].lower()))],
+        totals={"meals_eaten": sum(b["count"] for b in meals_list), "days_eaten": len(eaten_days),
+                "distinct_meals": len(meals_list), "repeats": sum(b["count"] - 1 for b in meals_list)},
+        forgotten=forgotten, never=never)
+
+
 # ---------------------------------------------------------------- pages
 
 @app.get("/")

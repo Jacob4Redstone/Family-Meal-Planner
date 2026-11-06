@@ -197,3 +197,79 @@ def fmt_qty(q, unit, system="recipe", symbol=""):
     if q != 1 and unit in PLURAL_UNITS:
         unit = PLURAL_UNITS[unit]
     return f"{_num(q)} {unit}" if unit else _num(q)
+
+
+# ---------------------------------------------------------------- aisles
+
+DEFAULT_AISLE_ORDER = ["Produce", "Bakery", "Meat & fish", "Dairy & eggs", "Pantry", "Spices & herbs", "Frozen", "Drinks",
+                       "Other"]
+
+_AISLE_WORDS = {
+    "Produce": (
+        "onion, spring onion, garlic, carrot, potato, sweet potato, tomato, cucumber, lettuce, salad, "
+        "spinach, kale, cabbage, broccoli, cauliflower, bell pepper, courgette, aubergine, mushroom, "
+        "leek, celery, apple, banana, lemon, lime, orange, avocado, ginger, chili, beetroot, pumpkin, "
+        "squash, corn, berry, strawberry, blueberry, grape, pear, fruit, vegetable, rocket, radish, "
+        "fennel, asparagus, green bean, pea, melon, peach, plum, mango, pineapple, cherry tomato, "
+        "salad leaf, herb salad"
+    ),
+    "Bakery": (
+        "bread, bun, roll, tortilla, wrap, pita, baguette, bagel, croissant, toast, naan"
+    ),
+    "Meat & fish": (
+        "beef, minced beef, minced pork, minced turkey, minced chicken, minced lamb, pork, chicken, "
+        "turkey, lamb, bacon, sausage, ham, salmon, cod, fish, tuna, prawn, meat, steak, mince, "
+        "fillet, mackerel, haddock, duck, chorizo, salami, meatball"
+    ),
+    "Dairy & eggs": (
+        "milk, cream, butter, cheese, yogurt, egg, parmesan, mozzarella, feta, sour cream, creme "
+        "fraiche, margarine, cottage cheese, cheddar, ricotta, mascarpone, quark, skyr"
+    ),
+    "Pantry": (
+        "flour, sugar, icing sugar, rice, pasta, spaghetti, noodle, oil, olive oil, vinegar, stock, "
+        "bouillon, bean, kidney bean, lentil, chickpea, tomato sauce, tomato paste, passata, sauce, "
+        "oats, cereal, honey, jam, nut, peanut butter, coconut milk, couscous, quinoa, breadcrumb, "
+        "mustard, ketchup, mayonnaise, syrup, chocolate, cocoa, baking powder, yeast, soy sauce, "
+        "tahini, cracker, biscuit, tinned tomato, pesto, olive, raisin, almond"
+    ),
+    "Spices & herbs": (
+        "salt, pepper, black pepper, paprika, cumin, cinnamon, oregano, basil, thyme, rosemary, "
+        "parsley, coriander, dill, mint, chives, curry, turmeric, nutmeg, spice, herb, bay leaf, "
+        "chili powder, cardamom, saffron, vanilla, clove, sage, cayenne, garlic powder"
+    ),
+    "Frozen": (
+        "frozen, ice cream, fish finger"
+    ),
+    "Drinks": (
+        "water, juice, wine, beer, cola, coffee, tea, soda, lemonade, sparkling water"
+    ),
+}
+AISLE_DEFAULTS = {word.strip(): aisle for aisle, words in _AISLE_WORDS.items() for word in words.split(",")}
+
+
+def lookup_aisle(key, overrides=None):
+    """The aisle for an ingredient key: your own choice first, then the built-in guess, else 'Other'."""
+    if overrides and key in overrides:
+        return overrides[key]
+    if key in AISLE_DEFAULTS:
+        return AISLE_DEFAULTS[key]
+    words = key.split()
+    if "frozen" in words:
+        return "Frozen"
+    if words and words[-1] in AISLE_DEFAULTS:
+        return AISLE_DEFAULTS[words[-1]]
+    for w in words:
+        if w in AISLE_DEFAULTS:
+            return AISLE_DEFAULTS[w]
+    return "Other"
+
+
+def order_aisles(present, custom=()):
+    """Aisles in shopping order: your order first, then the built-in order, then the rest alphabetically.
+    'Other' goes last unless you placed it yourself."""
+    custom = [c.lower() for c in custom]
+    rank = {}
+    for i, name in enumerate(custom + [a.lower() for a in DEFAULT_AISLE_ORDER]):
+        rank.setdefault(name, i)
+    return sorted(present, key=lambda a: (a.lower() == "other" and "other" not in custom,
+                                          rank.get(a.lower(), 10 ** 6), a.lower()))

@@ -71,6 +71,8 @@ h2.title{font:700 clamp(1.7rem,5vw,2.7rem)/1.1 var(--serif);margin:0 .5rem 0 0}
 .list input{width:1.2rem;height:1.2rem;flex:none;min-height:0}
 .list .n{flex:1}.list .a{color:var(--muted);font-variant-numeric:tabular-nums}
 .list input:checked~.n,.list input:checked~.a{text-decoration:line-through;opacity:.5}
+h3.aisle{font:600 .8rem var(--sans);text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:1.1rem 0 .3rem}
+.list .more{font:inherit;background:none;border:0;color:var(--muted);cursor:pointer;min-width:44px;min-height:44px;font-size:1.2rem}
 .list .rm{font:inherit;background:none;border:0;color:var(--muted);cursor:pointer;min-width:44px;min-height:44px;font-size:1.2rem}
 .based{color:var(--muted);font-size:.85rem;max-width:34rem}
 #extraForm{display:flex;gap:.5rem;max-width:34rem;margin-top:.8rem}
@@ -261,6 +263,10 @@ fieldset{border:0;padding:0;margin:.6rem 0}
         <textarea id="sAvoid" placeholder="peanut&#10;mushroom"></textarea>
         <p class="hint">For allergies and dislikes. A meal is excluded when the word is one of its tags or appears in its name or ingredients; excluded meals are marked in the Meals list. Days you plan by hand are not affected.</p>
 
+        <label class="f" for="sAisles">Shopping list order (aisles, one per line)</label>
+        <textarea id="sAisles" placeholder="Produce&#10;Bakery&#10;Dairy &amp; eggs"></textarea>
+        <p class="hint">The order you walk through the shop. Aisles you leave out follow in the usual order. To move an ingredient to another aisle, use its ⋯ button on the shopping list.</p>
+
         <label class="f" for="sPantry">Things you always have at home (one per line)</label>
         <textarea id="sPantry" placeholder="Salt&#10;Pepper&#10;Olive oil"></textarea>
         <p class="hint">These never show up on the shopping list.</p>
@@ -279,6 +285,10 @@ fieldset{border:0;padding:0;margin:.6rem 0}
 
         <div class="actions"><button class="btn primary" type="submit">Save settings</button></div>
       </form>
+
+      <h3>Share the shopping list</h3>
+      <p class="hint">Anyone with this address can see the shopping list, tick items and add extra items. They can see nothing else and do not need the password. Make a new link to stop an old one working.</p>
+      <div id="shareBox"></div>
 
       <h3>Offline use and installing</h3>
       <p class="hint" id="pwaStatus"></p>
@@ -302,6 +312,21 @@ fieldset{border:0;padding:0;margin:.6rem 0}
 <datalist id="catNames"></datalist>
 <datalist id="tagNames"></datalist>
 <datalist id="cookNames"></datalist>
+<datalist id="aisleNames"></datalist>
+
+<dialog id="dlgItem">
+  <h2 id="itemTitle"></h2>
+  <label class="f" for="itemAisle">Aisle</label>
+  <input id="itemAisle" list="aisleNames" maxlength="40" autocomplete="off">
+  <p class="hint">Remembered for this ingredient. Empty it to go back to the automatic guess.</p>
+  <label class="f" for="itemPrice">Price paid</label>
+  <input id="itemPrice" type="number" min="0" step="0.01" inputmode="decimal">
+  <p class="hint" id="itemPriceHint">Entering a price also ticks the item as bought.</p>
+  <label class="f" for="itemStock">I have enough at home for</label>
+  <select id="itemStock"><option value="">(no change)</option><option value="7">a week</option><option value="14">2 weeks</option><option value="30">a month</option><option value="90">3 months</option></select>
+  <p class="hint">The item is left off shopping lists until then.</p>
+  <div class="actions"><span class="sp"></span><button class="btn" data-close>Cancel</button><button class="btn primary" id="saveItem">Save</button></div>
+</dialog>
 
 <dialog id="dlgDay">
   <h2 id="dayTitle"></h2>
@@ -687,9 +712,13 @@ async function renderShopping(){
   if(id!==shopReq)return;
   shopData=d;setHash();
   let h='';
-  if(!d.items.length&&!d.extras.length)h='<p class="empty-note">No meals are planned for this period, so there is nothing to buy yet. Plan meals from the Calendar.</p>';
-  if(d.items.length)h+=`<ul class="list">${d.items.map(i=>`<li><label><input type="checkbox" data-k="${esc(i.key)}"${i.checked?' checked':''}><span class="n">${esc(i.name)}</span><span class="a">${esc(i.amount)}</span></label></li>`).join('')}</ul>`;
-  if(d.extras.length)h+=`<ul class="list">${d.extras.map(x=>`<li><label><input type="checkbox" data-k="extra:${x.id}"${x.checked?' checked':''}><span class="n">${esc(x.name)}</span></label><button class="rm" data-ex="${x.id}" aria-label="Remove ${esc(x.name)}">×</button></li>`).join('')}</ul>`;
+  const money=n=>Number(n).toFixed(2);
+  const row=i=>`<li><label><input type="checkbox" data-k="${esc(i.key)}"${i.checked?' checked':''}><span class="n">${esc(i.name)}</span><span class="a">${esc(i.amount)}${i.price!=null?(i.amount?' · ':'')+money(i.price):''}</span></label><button class="more" data-item="${esc(i.key)}" aria-label="Aisle, price and stock for ${esc(i.name)}" title="Aisle, price, stock">⋯</button></li>`;
+  if(!d.items.length&&!d.extras.length&&!d.in_stock.length)h='<p class="empty-note">No meals are planned for this period, so there is nothing to buy yet. Plan meals from the Calendar.</p>';
+  for(const a of d.aisles)h+=`<h3 class="aisle">${esc(a)}</h3><ul class="list">${d.items.filter(i=>i.aisle===a).map(row).join('')}</ul>`;
+  if(d.extras.length)h+=`<h3 class="aisle">Extras</h3><ul class="list">${d.extras.map(x=>`<li><label><input type="checkbox" data-k="extra:${x.id}"${x.checked?' checked':''}><span class="n">${esc(x.name)}</span></label><button class="rm" data-ex="${x.id}" aria-label="Remove ${esc(x.name)}">×</button></li>`).join('')}</ul>`;
+  if(d.total>0)h+=`<p class="based"><strong>Spent so far:</strong> ${money(d.total)}</p>`;
+  if(d.in_stock.length)h+=`<details class="based noprint"><summary>In stock at home (${d.in_stock.length})</summary><ul class="list">${d.in_stock.map(i=>`<li><span class="n" style="padding:.65rem .9rem">${esc(i.name)} <span class="a">until ${esc(short(parseD(i.until)))}</span></span><button class="btn small" data-need="${esc(i.key)}" style="margin-right:.5rem">Need it again</button></li>`).join('')}</ul></details>`;
   if(d.meals.length)h+=`<p class="based">For: ${d.meals.map(esc).join(', ')}. Leftover days add nothing.${d.hidden?` ${d.hidden} pantry item${d.hidden===1?'':'s'} hidden.`:''}${d.household?` Amounts are scaled to ${d.household} people where a meal states its servings.`:''}</p>`;
   $('#shop').innerHTML=h;
 }
@@ -699,9 +728,33 @@ $('#shop').addEventListener('change',guard(async e=>{
   catch(err){e.target.checked=!e.target.checked;throw err}
 }));
 $('#shop').addEventListener('click',guard(async e=>{
+  const need=e.target.closest('[data-need]');
+  if(need){await api('/shopping/item',{method:'PUT',body:{key:need.dataset.need,stock_days:0}});return renderShopping()}
+  const more=e.target.closest('.more');
+  if(more)return openItem(more.dataset.item);
   const b=e.target.closest('.rm');if(!b)return;
   await api('/shopping/extras/'+b.dataset.ex,{method:'DELETE'});await renderShopping();
 }));
+let itemKey=null;
+function openItem(key){
+  const i=shopData.items.find(x=>x.key===key);if(!i)return;
+  itemKey=key;
+  $('#itemTitle').textContent=i.name;
+  const aisles=[...new Set([...['Produce','Bakery','Meat & fish','Dairy & eggs','Pantry','Spices & herbs','Frozen','Drinks','Other'],...shopData.aisles])];
+  $('#aisleNames').innerHTML=aisles.map(a=>`<option value="${esc(a)}">`).join('');
+  $('#itemAisle').value=i.aisle;$('#itemPrice').value=i.price==null?'':i.price;$('#itemStock').value='';
+  $('#itemPriceHint').textContent=(i.price_hint!=null?`Last time: ${Number(i.price_hint).toFixed(2)}. `:'')+'Entering a price also ticks the item as bought.';
+  $('#dlgItem').showModal();
+}
+$('#saveItem').onclick=guard(async()=>{
+  const i=shopData.items.find(x=>x.key===itemKey);
+  const body={scope:shopData.scope,key:itemKey,today:iso(new Date())};
+  const aisle=$('#itemAisle').value.trim();if(aisle!==i.aisle)body.aisle=aisle;
+  const price=$('#itemPrice').value;if(price!==(i.price==null?'':String(i.price)))body.price=price===''?null:price;
+  if($('#itemStock').value)body.stock_days=+$('#itemStock').value;
+  if(Object.keys(body).length>3)await api('/shopping/item',{method:'PUT',body});
+  $('#dlgItem').close();await renderShopping();
+});
 $('#extraForm').addEventListener('submit',guard(async e=>{
   e.preventDefault();const name=$('#extraName').value.trim();if(!name||!shopData)return;
   await api('/shopping/extras',{method:'POST',body:{scope:shopData.scope,name}});
@@ -785,11 +838,32 @@ $('#runImport').onclick=guard(async()=>{
   toast(`Added ${r.added} meal${r.added===1?'':'s'}`+(r.updated?`, updated ${r.updated}`:'')+(r.skipped?`, skipped ${r.skipped} that already exist.`:'.'));
 });
 
+/* ---------- share link ---------- */
+async function renderShare(){
+  const r=await api('/share');
+  $('#shareBox').innerHTML=r.token
+    ?`<input id="shareUrl" readonly aria-label="Share address" value="${esc(location.origin+r.path)}"><div class="actions"><button class="btn" id="shareCopy" type="button">Copy</button><button class="btn" id="shareNew" type="button">Make a new link</button><button class="btn danger" id="shareStop" type="button">Stop sharing</button></div>`
+    :`<div class="actions"><button class="btn primary" id="shareNew" type="button">Create a share link</button></div>`;
+}
+$('#shareBox').addEventListener('click',guard(async e=>{
+  const id=e.target.id;
+  if(id==='shareCopy'){
+    try{await navigator.clipboard.writeText($('#shareUrl').value);toast('Link copied.')}catch{$('#shareUrl').select();toast('Press Ctrl+C to copy the selected link.')}
+  }else if(id==='shareNew'){
+    if($('#shareUrl')&&!confirm('The old link will stop working. Make a new one?'))return;
+    await api('/share',{method:'POST'});await renderShare();
+  }else if(id==='shareStop'){
+    if(!confirm('Stop sharing? The current link will stop working.'))return;
+    await api('/share',{method:'DELETE'});await renderShare();
+  }
+}));
+
 /* ---------- settings ---------- */
 function fillSettings(){
   $('#sHousehold').value=S.household;$('#sWeek').value=String(S.week_start);
   $('#sSlots').value=S.slots.join('\n');$('#sQuotas').value=S.quotas.join('\n');
   $('#sPantry').value=S.pantry.join('\n');$('#sUnits').value=S.units.join(', ');
+  $('#sAisles').value=S.aisle_order.join('\n');renderShare();
   $('#sCooks').value=S.cooks.join('\n');$('#sRules').value=S.rules.join('\n');$('#sAvoid').value=S.avoid.join('\n');
   $('#sSyn').value=S.synonyms.join('\n');$('#sUnitSys').value=S.unit_system;
   $('#icsUrl').value=location.origin+'/calendar.ics';
@@ -803,7 +877,7 @@ $('#setForm').addEventListener('submit',guard(async e=>{
   if(+$('#sWeek').value!==S.week_start&&!confirm('Changing the first day of the week resets the ticks on shopping lists (extra items are kept). Continue?'))return;
   S=await api('/settings',{method:'PUT',body:{household:+$('#sHousehold').value||0,week_start:+$('#sWeek').value,
     slots:$('#sSlots').value,quotas:$('#sQuotas').value,pantry:$('#sPantry').value,units:$('#sUnits').value,
-    synonyms:$('#sSyn').value,unit_system:$('#sUnitSys').value,rules:$('#sRules').value,avoid:$('#sAvoid').value,cooks:$('#sCooks').value}});
+    synonyms:$('#sSyn').value,unit_system:$('#sUnitSys').value,rules:$('#sRules').value,avoid:$('#sAvoid').value,cooks:$('#sCooks').value,aisle_order:$('#sAisles').value}});
   fillCookNames();
   weekStart=startOfWeek(weekStart);await loadMeals();fillSettings();toast('Settings saved.');  // meals again: the avoid list marks them
 }));

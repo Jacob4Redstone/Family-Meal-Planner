@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex,nofollow">
+<title>Shopping list</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23244f78'/%3E%3Ccircle cx='32' cy='32' r='19' fill='%23f7f8f5'/%3E%3C/svg%3E">
+<style>
+:root{--ink:#1d2b33;--muted:#62737c;--paper:#f7f8f5;--card:#fff;--line:#d3d9d2;--blue:#244f78;--on-blue:#fff;
+--serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+@media(prefers-color-scheme:dark){:root{--ink:#e6ece8;--muted:#9aa8a1;--paper:#13191b;--card:#1a2124;--line:#34403f;--blue:#8dbbe6;--on-blue:#0f1f2c}}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.45 var(--sans);background:var(--paper);color:var(--ink)}
+main{max-width:36rem;margin:0 auto;padding:1rem}
+h1{font:700 1.5rem var(--serif);margin:.2rem 0 .8rem}
+h2{font:600 .8rem var(--sans);text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:1.1rem 0 .3rem}
+.bar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem}
+.bar .title{flex:1;font-weight:600;min-width:9rem}
+button,select,input{font:inherit;min-height:44px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);padding:.4rem .8rem}
+button{cursor:pointer}
+button.primary{background:var(--blue);color:var(--on-blue);border-color:var(--blue);font-weight:600}
+:focus-visible{outline:3px solid var(--blue);outline-offset:1px}
+ul{list-style:none;margin:0;padding:0;background:var(--card);border:1px solid var(--line);border-radius:8px}
+li{display:flex;align-items:center;border-top:1px solid var(--line)}li:first-child{border-top:0}
+label{display:flex;flex:1;gap:.8rem;align-items:center;padding:.65rem .9rem;cursor:pointer;min-height:44px}
+label input{width:1.2rem;height:1.2rem;min-height:0;flex:none}
+.n{flex:1}.a{color:var(--muted);font-variant-numeric:tabular-nums}
+input:checked~.n,input:checked~.a{text-decoration:line-through;opacity:.5}
+.rm{border:0;background:none;color:var(--muted);font-size:1.2rem;min-width:44px}
+form{display:flex;gap:.5rem;margin-top:1rem}form input{flex:1;min-width:0}
+.note{color:var(--muted);font-size:.85rem}
+#msg{position:fixed;left:50%;bottom:1rem;transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:.6rem 1rem;border-radius:8px;display:none;max-width:90vw}
+@media print{.bar button,.bar select,form,.rm{display:none}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Shopping list</h1>
+  <div class="bar">
+    <button id="prev" aria-label="Previous">‹</button>
+    <span class="title" id="title"></span>
+    <button id="next" aria-label="Next">›</button>
+    <select id="weeks" aria-label="Number of weeks"><option value="1">1 week</option><option value="2">2 weeks</option><option value="4">4 weeks</option></select>
+  </div>
+  <div id="list"></div>
+  <form id="addForm"><input id="addName" maxlength="100" placeholder="Add something else" aria-label="Add an extra item"><button class="primary" type="submit">Add</button></form>
+  <p class="note" id="note"></p>
+</main>
+<div id="msg" role="status"></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pad=n=>String(n).padStart(2,'0');
+const iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const parseD=s=>{const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d)};
+const addDays=(d,n)=>new Date(d.getFullYear(),d.getMonth(),d.getDate()+n);
+const short=d=>d.toLocaleDateString(undefined,{day:'numeric',month:'short'});
+const base=location.pathname.replace(/\/+$/,'');   // /s/<token>
+let week=new Date(),weeks=1,data=null,mt;
+function say(t){const m=$('#msg');m.textContent=t;m.style.display='block';clearTimeout(mt);mt=setTimeout(()=>m.style.display='none',4500)}
+async function api(path,opt={}){
+  const r=await fetch(base+'/api'+path,{...opt,headers:{'Content-Type':'application/json','X-Requested-With':'fetch'},body:opt.body?JSON.stringify(opt.body):undefined});
+  const d=(r.headers.get('content-type')||'').includes('json')?await r.json():{};
+  if(!r.ok)throw new Error(d.error||'Something went wrong.');
+  return d;
+}
+const guard=fn=>async(...a)=>{try{await fn(...a)}catch(e){say(e.message)}};
+async function load(){
+  data=await api(`/shopping?week=${iso(week)}&weeks=${weeks}`);
+  week=parseD(data.start);
+  $('#title').textContent=`${short(parseD(data.start))} – ${short(parseD(data.end))}`;
+  $('#weeks').value=String(weeks);
+  const row=i=>`<li><label><input type="checkbox" data-k="${esc(i.key)}"${i.checked?' checked':''}><span class="n">${esc(i.name)}</span><span class="a">${esc(i.amount)}</span></label></li>`;
+  let h='';
+  for(const a of data.aisles){h+=`<h2>${esc(a)}</h2><ul>${data.items.filter(i=>i.aisle===a).map(row).join('')}</ul>`}
+  if(data.extras.length)h+=`<h2>Extras</h2><ul>${data.extras.map(x=>`<li><label><input type="checkbox" data-k="extra:${x.id}"${x.checked?' checked':''}><span class="n">${esc(x.name)}</span></label><button class="rm" data-ex="${x.id}" aria-label="Remove ${esc(x.name)}">×</button></li>`).join('')}</ul>`;
+  if(!data.items.length&&!data.extras.length)h='<p class="note">Nothing to buy for this period yet.</p>';
+  $('#list').innerHTML=h;
+  $('#note').textContent=data.in_stock.length?`${data.in_stock.length} item${data.in_stock.length===1?' is':'s are'} in stock and left out.`:'';
+}
+$('#list').addEventListener('change',guard(async e=>{
+  if(!e.target.dataset.k)return;
+  try{await api('/check',{method:'PUT',body:{scope:data.scope,key:e.target.dataset.k,checked:e.target.checked}})}
+  catch(err){e.target.checked=!e.target.checked;throw err}
+}));
+$('#list').addEventListener('click',guard(async e=>{
+  const b=e.target.closest('.rm');if(!b)return;
+  await api('/extras/'+b.dataset.ex,{method:'DELETE'});await load();
+}));
+$('#addForm').addEventListener('submit',guard(async e=>{
+  e.preventDefault();const name=$('#addName').value.trim();if(!name||!data)return;
+  await api('/extras',{method:'POST',body:{scope:data.scope,name}});$('#addName').value='';await load();
+}));
+$('#prev').onclick=guard(()=>{week=addDays(week,-7*weeks);return load()});
+$('#next').onclick=guard(()=>{week=addDays(week,7*weeks);return load()});
+$('#weeks').onchange=guard(()=>{weeks=+$('#weeks').value;return load()});
+guard(load)();
+// other people tick things too: refresh now and then, but not while someone is typing
+setInterval(()=>{if(!document.hidden&&document.activeElement!==$('#addName'))guard(load)()},30000);
+</script>
+</body>
+</html>

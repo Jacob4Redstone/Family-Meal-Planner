@@ -6,6 +6,7 @@ import json
 import os
 import random
 import re
+import secrets
 import socket
 import sqlite3
 import time
@@ -16,7 +17,9 @@ from datetime import date, datetime, timedelta, timezone
 from flask import Flask, Response, abort, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from ingredients import build_synonyms, clean_ingredient, fmt_qty, parse_ingredient, parse_ingredient_full, singular  # noqa: F401
+from ingredients import (  # noqa: F401
+    build_synonyms, clean_ingredient, fmt_qty, lookup_aisle, order_aisles, parse_ingredient, parse_ingredient_full, singular,
+)
 
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 GAP_DAYS = int(os.environ.get("GAP_DAYS", "21"))  # a meal may not repeat within this many days
@@ -142,7 +145,7 @@ def _err(e):
 def _guard():
     if request.path == "/healthz":
         return None
-    if AUTH_PASSWORD:
+    if AUTH_PASSWORD and not request.path.startswith("/s/"):  # /s/<token>/... is the shared shopping list
         a = request.authorization
         if not (a and hmac.compare_digest((a.password or "").encode(), AUTH_PASSWORD.encode())):
             return Response("Authentication required.", 401, {"WWW-Authenticate": 'Basic realm="Meal planner"'})
@@ -418,6 +421,7 @@ def prune_shopping(c):
     c.execute("DELETE FROM extras WHERE substr(scope, 1, 10) < ?", (cutoff,))
     c.execute("DELETE FROM checked WHERE substr(scope, 1, 10) < ?", (cutoff,))
     c.execute("DELETE FROM checked WHERE key LIKE 'extra:%' AND CAST(substr(key, 7) AS INTEGER) NOT IN (SELECT id FROM extras)")
+    c.execute("DELETE FROM stock WHERE until < ?", (date.today().isoformat(),))
 
 
 def rekey_shopping(c, ws):
@@ -1213,12 +1217,11 @@ def api_can_undo():
 
 # ---------------------------------------------------------------- shopping list
 
-@app.get("/api/shopping")
-def shopping():
-    c = db()
+def shopping_payload(c, week, weeks_arg):
+    """The shopping list for one or more weeks: items grouped by aisle, ticks, prices, items in stock, extra items."""
     S = get_settings(c)
-    ws = week_start_of(parse_day(request.args.get("week")), S["week_start"])
-    weeks = to_int(request.args.get("weeks"), 1, 6, 1)
+    ws = week_start_of(parse_day(week), S["week_start"])
+    weeks = to_int(weeks_arg, 1, 6, 1)
     we = ws + timedelta(7 * weeks - 1)
     scope = f"{ws.isoformat()}:{weeks}"
     part = ("SELECT p.day AS day, COALESCE(m.name, p.label) AS name, COALESCE(m.ingredients, p.ing_snapshot) AS ingredients, "
@@ -1250,9 +1253,15 @@ def shopping():
                 it["qty"][unit] = it["qty"].get(unit, 0) + qty * factor
                 if sym:
                     it["sym"].setdefault(unit, {})[sym] = it["sym"].get(unit, {}).get(sym, 0) + 1
-    done = {r["key"] for r in c.execute("SELECT key FROM checked WHERE scope=?", (scope,))}
-    out = []
+    checked = {r["key"]: r["price"] for r in c.execute("SELECT key, price FROM checked WHERE scope=?", (scope,))}
+    aisles = {r["key"]: r["aisle"] for r in c.execute("SELECT key, aisle FROM aisle_map")}
+    hints = {r["key"]: r["price"] for r in c.execute("SELECT key, price FROM item_price")}
+    stock = {r["key"]: r["until"] for r in c.execute("SELECT key, until FROM stock")}
+    out, in_stock = [], []
     for it in items.values():
+        if stock.get(it["key"], "") >= we.isoformat():  # in stock for the whole period: nothing to buy
+            in_stock.append({"key": it["key"], "name": it["name"], "until": stock[it["key"]]})
+            continue
         parts = [fmt_qty(q, u, system, max(it["sym"].get(u, {"": 0}), key=lambda k: it["sym"].get(u, {"": 0})[k]))
                  for u, q in it["qty"].items()]
         if parts and it["plain"]:
@@ -1260,46 +1269,188 @@ def shopping():
         elif it["plain"] > 1:
             parts.append(f"×{it['plain']}")
         out.append({"key": it["key"], "name": it["name"], "amount": " + ".join(parts).replace("+ + ", "+ "),
-                    "checked": it["key"] in done})
+                    "checked": it["key"] in checked, "aisle": lookup_aisle(it["key"], aisles),
+                    "price": checked.get(it["key"]), "price_hint": hints.get(it["key"])})
     out.sort(key=lambda i: i["name"].lower())
-    extras = [{"id": r["id"], "name": r["name"], "checked": f"extra:{r['id']}" in done}
+    in_stock.sort(key=lambda i: i["name"].lower())
+    extras = [{"id": r["id"], "name": r["name"], "checked": f"extra:{r['id']}" in checked}
               for r in c.execute("SELECT id, name FROM extras WHERE scope=? ORDER BY id", (scope,))]
-    return jsonify(start=ws.isoformat(), end=we.isoformat(), weeks=weeks, scope=scope, meals=names, items=out,
-                   extras=extras, hidden=len(hidden), household=S["household"])
+    total = round(sum(i["price"] for i in out if i["price"] is not None), 2)
+    return dict(start=ws.isoformat(), end=we.isoformat(), weeks=weeks, scope=scope, meals=names, items=out,
+                aisles=order_aisles({i["aisle"] for i in out}, S["aisle_order"]), in_stock=in_stock, total=total,
+                extras=extras, hidden=len(hidden), household=S["household"])
+
+
+def mark_checked(c, scope, key, checked):
+    scope, key = str(scope or "")[:40], str(key or "")[:200]
+    if not scope or not key:
+        abort(400, "Missing item.")
+    if checked:
+        c.execute("INSERT OR IGNORE INTO checked(scope,key) VALUES (?,?)", (scope, key))
+    else:
+        c.execute("DELETE FROM checked WHERE scope=? AND key=?", (scope, key))
+    prune_shopping(c)
+    c.commit()
+
+
+def add_extra(c, scope, name):
+    scope, name = str(scope or "")[:40], re.sub(r"\s+", " ", str(name or "")).strip()[:100]
+    if not scope or not name:
+        abort(400, "Write what to add.")
+    cur = c.execute("INSERT INTO extras(scope,name) VALUES (?,?)", (scope, name))
+    prune_shopping(c)
+    c.commit()
+    return cur.lastrowid
+
+
+def remove_extra(c, eid):
+    c.execute("DELETE FROM extras WHERE id=?", (eid,))
+    c.execute("DELETE FROM checked WHERE key=?", (f"extra:{eid}",))
+    c.commit()
+
+
+@app.get("/api/shopping")
+def shopping():
+    return jsonify(shopping_payload(db(), request.args.get("week"), request.args.get("weeks")))
 
 
 @app.put("/api/shopping/check")
 def shopping_check():
     b = request.get_json(silent=True) or {}
-    scope, key = str(b.get("scope") or "")[:40], str(b.get("key") or "")[:200]
-    if not scope or not key:
-        abort(400, "Missing item.")
-    if b.get("checked"):
-        db().execute("INSERT OR IGNORE INTO checked(scope,key) VALUES (?,?)", (scope, key))
-    else:
-        db().execute("DELETE FROM checked WHERE scope=? AND key=?", (scope, key))
-    prune_shopping(db())
-    db().commit()
+    mark_checked(db(), b.get("scope"), b.get("key"), b.get("checked"))
     return jsonify(ok=True)
 
 
 @app.post("/api/shopping/extras")
 def extras_add():
     b = request.get_json(silent=True) or {}
-    scope, name = str(b.get("scope") or "")[:40], re.sub(r"\s+", " ", str(b.get("name") or "")).strip()[:100]
-    if not scope or not name:
-        abort(400, "Write what to add.")
-    cur = db().execute("INSERT INTO extras(scope,name) VALUES (?,?)", (scope, name))
-    prune_shopping(db())
-    db().commit()
-    return jsonify(id=cur.lastrowid), 201
+    return jsonify(id=add_extra(db(), b.get("scope"), b.get("name"))), 201
 
 
 @app.delete("/api/shopping/extras/<int:eid>")
 def extras_delete(eid):
-    db().execute("DELETE FROM extras WHERE id=?", (eid,))
-    db().execute("DELETE FROM checked WHERE key=?", (f"extra:{eid}",))
-    db().commit()
+    remove_extra(db(), eid)
+    return jsonify(ok=True)
+
+
+@app.put("/api/shopping/item")
+def shopping_item():
+    """Change one list item: its aisle (remembered), the price paid (remembered as a hint), or keep it in stock."""
+    b = request.get_json(silent=True) or {}
+    key, scope = str(b.get("key") or "")[:200], str(b.get("scope") or "")[:40]
+    if not key:
+        abort(400, "Missing item.")
+    c = db()
+    if "aisle" in b:
+        aisle = re.sub(r"\s+", " ", str(b["aisle"] or "")).strip()[:40]
+        if aisle:
+            c.execute("INSERT OR REPLACE INTO aisle_map(key, aisle) VALUES (?,?)", (key, aisle))
+        else:
+            c.execute("DELETE FROM aisle_map WHERE key=?", (key,))
+    if "price" in b:
+        if not scope:
+            abort(400, "Missing list.")
+        if b["price"] in (None, ""):
+            c.execute("UPDATE checked SET price=NULL WHERE scope=? AND key=?", (scope, key))
+        else:
+            try:
+                price = round(float(b["price"]), 2)
+            except (TypeError, ValueError):
+                abort(400, "The price must be a number.")
+            if not 0 <= price <= 100000:
+                abort(400, "The price must be a number.")
+            c.execute("INSERT OR IGNORE INTO checked(scope,key) VALUES (?,?)", (scope, key))  # paid = bought
+            c.execute("UPDATE checked SET price=? WHERE scope=? AND key=?", (price, scope, key))
+            c.execute("INSERT OR REPLACE INTO item_price(key, price) VALUES (?,?)", (key, price))
+    if "stock_days" in b:
+        days = to_int(b["stock_days"], 0, 365, 0)
+        if days:
+            c.execute("INSERT OR REPLACE INTO stock(key, until) VALUES (?,?)",
+                      (key, (client_today() + timedelta(days)).isoformat()))
+        else:
+            c.execute("DELETE FROM stock WHERE key=?", (key,))
+    prune_shopping(c)
+    c.commit()
+    return jsonify(ok=True)
+
+
+# ---------------------------------------------------------------- share link (shopping list only)
+
+def share_token(c):
+    r = c.execute("SELECT value FROM settings WHERE key='share_token'").fetchone()
+    return r["value"] if r else None
+
+
+def require_share(token):
+    stored = share_token(db())
+    if not stored or not hmac.compare_digest(token.encode(), stored.encode()):
+        abort(404, "This link is not valid.")
+
+
+@app.get("/api/share")
+def share_get():
+    t = share_token(db())
+    return jsonify(token=t, path=f"/s/{t}" if t else None)
+
+
+@app.post("/api/share")
+def share_create():
+    """Create the link, or make a new one (which stops the old one working)."""
+    c = db()
+    t = secrets.token_urlsafe(16)
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('share_token', ?)", (t,))
+    c.commit()
+    return jsonify(token=t, path=f"/s/{t}"), 201
+
+
+@app.delete("/api/share")
+def share_revoke():
+    c = db()
+    c.execute("DELETE FROM settings WHERE key='share_token'")
+    c.commit()
+    return jsonify(ok=True)
+
+
+@app.after_request
+def _share_headers(resp):
+    if request.path.startswith("/s/"):
+        resp.headers["X-Robots-Tag"] = "noindex"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.get("/s/<token>")
+def share_page(token):
+    require_share(token)
+    return app.send_static_file("share.html")
+
+
+@app.get("/s/<token>/api/shopping")
+def share_shopping(token):
+    require_share(token)
+    return jsonify(shopping_payload(db(), request.args.get("week"), request.args.get("weeks")))
+
+
+@app.put("/s/<token>/api/check")
+def share_check(token):
+    require_share(token)
+    b = request.get_json(silent=True) or {}
+    mark_checked(db(), b.get("scope"), b.get("key"), b.get("checked"))
+    return jsonify(ok=True)
+
+
+@app.post("/s/<token>/api/extras")
+def share_extras_add(token):
+    require_share(token)
+    b = request.get_json(silent=True) or {}
+    return jsonify(id=add_extra(db(), b.get("scope"), b.get("name"))), 201
+
+
+@app.delete("/s/<token>/api/extras/<int:eid>")
+def share_extras_delete(token, eid):
+    require_share(token)
+    remove_extra(db(), eid)
     return jsonify(ok=True)
 
 
@@ -1315,6 +1466,9 @@ def backup():
         "lunch": [dict(r) for r in c.execute("SELECT * FROM plan_lunch ORDER BY day")],
         "settings": get_settings(c),
         "checked": [dict(r) for r in c.execute("SELECT * FROM checked")],
+        "aisles": [dict(r) for r in c.execute("SELECT * FROM aisle_map ORDER BY key")],
+        "prices": [dict(r) for r in c.execute("SELECT * FROM item_price ORDER BY key")],
+        "stock": [dict(r) for r in c.execute("SELECT * FROM stock ORDER BY key")],
         "extras": [dict(r) for r in c.execute("SELECT * FROM extras ORDER BY id")],
     }
     return Response(json.dumps(data, indent=1, ensure_ascii=False), mimetype="application/json",
@@ -1328,8 +1482,9 @@ def restore():
         abort(400, "This is not a meal planner backup file.")
     c = db()
     try:
-        for t in ("plan", "plan_lunch", "meals", "checked", "extras", "settings"):
+        for t in ("plan", "plan_lunch", "meals", "checked", "extras", "aisle_map", "item_price", "stock"):
             c.execute(f"DELETE FROM {t}")
+        c.execute("DELETE FROM settings WHERE key IN ('main', 'undo')")  # the share link is not part of a backup
         ids = set()
         for m in d["meals"]:
             mid = to_int(m.get("id"), 1, 2 ** 53, 0)
@@ -1352,7 +1507,15 @@ def restore():
                       (day.isoformat(), r["kind"], r.get("meal_id"), str(r.get("label") or "")[:120],
                        str(r.get("ing_snapshot") or "")))
         for r in d.get("checked") or []:
-            c.execute("INSERT OR IGNORE INTO checked(scope,key) VALUES (?,?)", (str(r["scope"]), str(r["key"])))
+            price = None if r.get("price") is None else float(r["price"])
+            c.execute("INSERT OR IGNORE INTO checked(scope,key,price) VALUES (?,?,?)", (str(r["scope"]), str(r["key"]), price))
+        for r in d.get("aisles") or []:
+            c.execute("INSERT OR REPLACE INTO aisle_map(key,aisle) VALUES (?,?)", (str(r["key"])[:200], str(r["aisle"])[:40]))
+        for r in d.get("prices") or []:
+            c.execute("INSERT OR REPLACE INTO item_price(key,price) VALUES (?,?)", (str(r["key"])[:200], float(r["price"])))
+        for r in d.get("stock") or []:
+            until = parse_day(r["until"]).isoformat()
+            c.execute("INSERT OR REPLACE INTO stock(key,until) VALUES (?,?)", (str(r["key"])[:200], until))
         for r in d.get("extras") or []:
             c.execute("INSERT INTO extras(id,scope,name) VALUES (?,?,?)", (int(r["id"]), str(r["scope"]), str(r["name"])[:100]))
         save_settings(c, clean_settings(d.get("settings") or {}))

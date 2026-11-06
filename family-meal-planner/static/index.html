@@ -102,6 +102,9 @@ fieldset{border:0;padding:0;margin:.6rem 0}
 .chip small{color:var(--muted);font-size:.75rem}
 .chip:hover{border-color:var(--blue)}
 .tagline{color:var(--muted);font-size:.78rem}
+.lunch,.cookline,.prep{font-size:.72rem;color:var(--muted);line-height:1.25;overflow-wrap:anywhere}
+.prep{color:var(--blue)}
+.day .lunch{border-top:1px dotted var(--line);margin-top:.15rem;padding-top:.1rem}
 .excluded{color:#b3261e;font-size:.78rem}
 .btn.small{min-height:36px;padding:.25rem .6rem;font-size:.85rem}
 .settings{max-width:40rem}
@@ -212,6 +215,10 @@ fieldset{border:0;padding:0;margin:.6rem 0}
         <textarea id="sQuotas" placeholder="Pasta = 2&#10;Fish = 1"></textarea>
         <p class="hint">Planning avoids more than this many meals of a category in one week, when it can.</p>
 
+        <label class="f" for="sCooks">Who cooks (one per line)</label>
+        <textarea id="sCooks" placeholder="Mon-Fri = Anna&#10;Sat, Sun = Ben"></textarea>
+        <p class="hint">Shown on the calendar and on the Today page. In a day's dialog you can choose a different cook for that day only.</p>
+
         <label class="f" for="sRules">Tag rules (one per line)</label>
         <textarea id="sRules" placeholder="Mon-Fri = quick&#10;Sat = special"></textarea>
         <p class="hint">Planning prefers meals with that tag on those weekdays (set tags in the meal form). It never leaves a day empty if no meal has the tag.</p>
@@ -260,6 +267,7 @@ fieldset{border:0;padding:0;margin:.6rem 0}
 <datalist id="mealNames"></datalist>
 <datalist id="catNames"></datalist>
 <datalist id="tagNames"></datalist>
+<datalist id="cookNames"></datalist>
 
 <dialog id="dlgDay">
   <h2 id="dayTitle"></h2>
@@ -273,7 +281,15 @@ fieldset{border:0;padding:0;margin:.6rem 0}
   <div id="rowMeal"><label class="f" for="dayMeal" id="dayMealLabel">Meal</label>
     <input id="dayMeal" list="mealNames" autocomplete="off" placeholder="Start typing a meal name"></div>
   <div id="rowNote"><label class="f" for="dayNote">Note</label><input id="dayNote" maxlength="80"></div>
+  <div id="rowCook"><label class="f" for="dayCook">Cook for this day</label>
+    <input id="dayCook" list="cookNames" maxlength="40" placeholder="Leave empty to use the weekday rule"></div>
   <label class="check" id="rowPin"><input type="checkbox" id="dayPin"> Pin this day (planning never changes it)</label>
+  <fieldset style="margin-top:.8rem"><legend class="f">Lunch</legend>
+    <select id="lunchType" aria-label="Lunch"><option value="clear">Nothing</option><option value="meal">A meal</option>
+      <option value="leftover">Leftovers</option><option value="custom">A note</option></select>
+    <input id="lunchMeal" list="mealNames" autocomplete="off" placeholder="Start typing a meal name" style="margin-top:.4rem" aria-label="Lunch meal">
+    <input id="lunchNote" maxlength="80" placeholder="Note, for example: canteen" style="margin-top:.4rem" aria-label="Lunch note">
+  </fieldset>
   <div class="inline" style="margin-top:.8rem">
     <div style="flex:1"><label class="f" for="swapWith" style="margin-top:0">Swap with another day</label><input type="date" id="swapWith"></div>
     <button class="btn" id="swapBtn">Swap</button>
@@ -424,7 +440,11 @@ function warnSkipped(r){
 }
 
 /* ---------- calendar ---------- */
-let calReq=0;
+let calReq=0,calExtra={lunch:{},cook:{},override:{},prep:{}};
+function fillCookNames(){
+  const names=[...new Set(S.cooks.map(l=>(l.split(/[=:]/)[1]||'').trim()).filter(Boolean))];
+  $('#cookNames').innerHTML=names.map(n=>`<option value="${esc(n)}">`).join('');
+}
 async function renderCalendar(){
   const id=++calReq,y=cur.getFullYear(),m=cur.getMonth();
   $('#monthTitle').textContent=cur.toLocaleDateString(undefined,{month:'long',year:'numeric'});
@@ -432,10 +452,11 @@ async function renderCalendar(){
   $('#dows').innerHTML='<div></div>'+order.map(i=>`<div>${DAYS[i]}</div>`).join('');
   const start=startOfWeek(new Date(y,m,1)),end=addDays(startOfWeek(new Date(y,m+1,0)),6);
   $('#calBox').classList.add('loading');
-  let rows;
-  try{rows=await api(`/plan?start=${iso(start)}&end=${iso(end)}`)}finally{if(id===calReq)$('#calBox').classList.remove('loading')}
+  let rows,ex;
+  try{[rows,ex]=await Promise.all([api(`/plan?start=${iso(start)}&end=${iso(end)}`),api(`/plan/extras?start=${iso(start)}&end=${iso(end)}`)])}
+  finally{if(id===calReq)$('#calBox').classList.remove('loading')}
   if(id!==calReq)return; // a newer render has taken over
-  plan=Object.fromEntries(rows.map(r=>[r.day,r]));
+  plan=Object.fromEntries(rows.map(r=>[r.day,r]));calExtra=ex;
   const today=iso(new Date());let h='';
   for(let w=start;w<=end;w=addDays(w,7)){
     const wn=weekNo(w);
@@ -446,6 +467,10 @@ async function renderCalendar(){
       const e=plan[k];let body='';
       if(e)body=e.kind==='leftover'?`<div class="meal">Leftovers from ${esc(e.name)}</div>`
         :`<div class="meal">${esc(e.name)}</div>${e.category?`<div class="cat">${esc(e.category)}</div>`:''}`;
+      const lu=ex.lunch[k],prep=ex.prep[k]||[],cook=ex.cook[k];
+      body+=(lu?`<div class="lunch">Lunch: ${esc(lu.kind==='leftover'?'leftovers from '+lu.name:lu.name)}</div>`:'')
+        +prep.map(p=>`<div class="prep" title="For ${esc(p.meal)} on ${esc(short(parseD(p.for_day)))}">🛈 ${esc(p.text)}</div>`).join('')
+        +(cook&&(e||lu)?`<div class="cookline">Cook: ${esc(cook)}</div>`:'');
       h+=`<div class="day ${e?e.kind:'empty'}${k===today?' today':''}" data-day="${k}" tabindex="0" role="button"${e&&e.kind!=='leftover'?' draggable="true"':''} aria-label="${esc(d.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'}))}${e&&e.locked?', pinned':''}">${e&&e.locked?'<span class="pin" title="Pinned">📌</span>':''}<div class="dn"><span class="dow">${d.toLocaleDateString(undefined,{weekday:'short'})}</span><span>${d.getDate()}</span></div><div>${body}</div></div>`;
     }
     h+='</div>';
@@ -478,11 +503,13 @@ function syncDayType(){
   const t=$('#dayType').value;
   $('#rowMeal').hidden=!(t==='meal'||t==='leftover');
   $('#rowNote').hidden=t!=='custom';
-  $('#rowPin').hidden=t==='clear';
+  $('#rowPin').hidden=t==='clear';$('#rowCook').hidden=t==='clear';
   $('#rowSuggest').hidden=t!=='meal';
+  const l=$('#lunchType').value;
+  $('#lunchMeal').hidden=!(l==='meal'||l==='leftover');$('#lunchNote').hidden=l!=='custom';
   $('#dayMealLabel').textContent=t==='leftover'?'Leftovers from':'Meal';
 }
-$('#dayType').onchange=syncDayType;
+$('#dayType').onchange=syncDayType;$('#lunchType').onchange=syncDayType;
 function openDay(k){
   dayKey=k;const e=plan[k];
   $('#dayTitle').textContent=parseD(k).toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'});
@@ -491,17 +518,28 @@ function openDay(k){
   $('#dayNote').value=e&&e.kind==='custom'?e.name:'';
   $('#dayPin').checked=!!(e&&e.locked);
   $('#swapWith').value='';$('#suggestions').innerHTML='';
+  $('#dayCook').value=calExtra.override[k]||'';$('#dayCook').placeholder=calExtra.cook[k]&&!calExtra.override[k]?`Weekday rule: ${calExtra.cook[k]}`:'Leave empty to use the weekday rule';
+  const lu=calExtra.lunch[k];
+  $('#lunchType').value=lu?lu.kind:'clear';$('#lunchMeal').value=lu&&lu.kind!=='custom'?lu.name:'';$('#lunchNote').value=lu&&lu.kind==='custom'?lu.name:'';
   syncDayType();$('#dlgDay').showModal();
 }
 $('#saveDay').onclick=guard(async()=>{
-  const t=$('#dayType').value,locked=$('#dayPin').checked;let body={kind:'clear'};
-  if(t==='custom')body={kind:'custom',label:$('#dayNote').value,locked};
+  const t=$('#dayType').value,locked=$('#dayPin').checked,cook=$('#dayCook').value;let body={kind:'clear'};
+  if(t==='custom')body={kind:'custom',label:$('#dayNote').value,locked,cook};
   else if(t!=='clear'){
     const name=$('#dayMeal').value.trim().toLowerCase(),m=meals.find(x=>x.name.toLowerCase()===name);
     if(!m)throw new Error('Pick a meal from the suggestions.');
-    body={kind:t,meal_id:m.id,locked};
+    body={kind:t,meal_id:m.id,locked,cook};
+  }
+  let lunch={kind:'clear'};const lt=$('#lunchType').value;
+  if(lt==='custom')lunch={kind:'custom',label:$('#lunchNote').value};
+  else if(lt!=='clear'){
+    const ln=$('#lunchMeal').value.trim().toLowerCase(),lm=meals.find(x=>x.name.toLowerCase()===ln);
+    if(!lm)throw new Error('Pick a lunch meal from the suggestions.');
+    lunch={kind:lt,meal_id:lm.id};
   }
   const r=await api('/plan/'+dayKey,{method:'PUT',body});
+  await api('/lunch/'+dayKey,{method:'PUT',body:lunch});
   $('#dlgDay').close();await renderCalendar();warnSkipped(r);
 });
 $('#reroll').onclick=guard(async()=>{
@@ -660,7 +698,7 @@ function fillSettings(){
   $('#sHousehold').value=S.household;$('#sWeek').value=String(S.week_start);
   $('#sSlots').value=S.slots.join('\n');$('#sQuotas').value=S.quotas.join('\n');
   $('#sPantry').value=S.pantry.join('\n');$('#sUnits').value=S.units.join(', ');
-  $('#sRules').value=S.rules.join('\n');$('#sAvoid').value=S.avoid.join('\n');
+  $('#sCooks').value=S.cooks.join('\n');$('#sRules').value=S.rules.join('\n');$('#sAvoid').value=S.avoid.join('\n');
   $('#sSyn').value=S.synonyms.join('\n');$('#sUnitSys').value=S.unit_system;
   $('#icsUrl').value=location.origin+'/calendar.ics';
   $('#pwaStatus').textContent=window.isSecureContext&&'serviceWorker' in navigator
@@ -673,7 +711,8 @@ $('#setForm').addEventListener('submit',guard(async e=>{
   if(+$('#sWeek').value!==S.week_start&&!confirm('Changing the first day of the week resets the ticks on shopping lists (extra items are kept). Continue?'))return;
   S=await api('/settings',{method:'PUT',body:{household:+$('#sHousehold').value||0,week_start:+$('#sWeek').value,
     slots:$('#sSlots').value,quotas:$('#sQuotas').value,pantry:$('#sPantry').value,units:$('#sUnits').value,
-    synonyms:$('#sSyn').value,unit_system:$('#sUnitSys').value,rules:$('#sRules').value,avoid:$('#sAvoid').value}});
+    synonyms:$('#sSyn').value,unit_system:$('#sUnitSys').value,rules:$('#sRules').value,avoid:$('#sAvoid').value,cooks:$('#sCooks').value}});
+  fillCookNames();
   weekStart=startOfWeek(weekStart);await loadMeals();fillSettings();toast('Settings saved.');  // meals again: the avoid list marks them
 }));
 $('#restoreFile').onchange=guard(async e=>{
@@ -688,7 +727,7 @@ $('#restoreFile').onchange=guard(async e=>{
 guard(async()=>{
   [cfg,S]=await Promise.all([api('/config'),api('/settings')]);
   weekStart=startOfWeek(new Date());
-  readHash();
+  readHash();fillCookNames();
   await loadMeals();refreshUndo();
   await showTab(tab);
 })();

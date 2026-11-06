@@ -522,12 +522,17 @@ def insert_meal(c, v, mid=None):
     return cur.lastrowid
 
 
+# every served meal, dinner and lunch (used for "last served" and statistics)
+SERVED_SQL = ("SELECT day, meal_id FROM plan WHERE kind='meal' "
+              "UNION ALL SELECT day, meal_id FROM plan_lunch WHERE kind='meal'")
+
+
 def select_meals(c, today):
     today = today.isoformat()
     return c.execute(
         "SELECT m.*, "
-        "(SELECT MAX(day) FROM plan p WHERE p.meal_id=m.id AND p.kind='meal' AND p.day<=?) AS last_served, "
-        "(SELECT COUNT(*) FROM plan p WHERE p.meal_id=m.id AND p.kind='meal' AND p.day<=?) AS times_served "
+        f"(SELECT MAX(day) FROM ({SERVED_SQL}) s WHERE s.meal_id=m.id AND s.day<=?) AS last_served, "
+        f"(SELECT COUNT(*) FROM ({SERVED_SQL}) s WHERE s.meal_id=m.id AND s.day<=?) AS times_served "
         "FROM meals m ORDER BY m.name COLLATE NOCASE", (today, today)).fetchall()
 
 
@@ -563,6 +568,7 @@ def edit_meal(mid):
     # Keep the plan consistent: new name on the calendar; leftover days follow the new setting,
     # but only from today on (days that are over stay as they were).
     c.execute("UPDATE plan SET label=? WHERE meal_id=?", (v["name"], mid))
+    c.execute("UPDATE plan_lunch SET label=? WHERE meal_id=?", (v["name"], mid))
     span = span_of({"leftovers": v["leftovers"], "leftover_days": v["leftover_days"]})
     skipped, before = [], c.total_changes
     for r in c.execute("SELECT day FROM plan WHERE meal_id=? AND kind='meal' AND day>=?",
@@ -580,6 +586,7 @@ def delete_meal(mid):
     m = c.execute("SELECT ingredients FROM meals WHERE id=?", (mid,)).fetchone()
     if m:  # planned days keep the name and the ingredients, so the calendar and shopping list stay intact
         c.execute("UPDATE plan SET ing_snapshot=? WHERE meal_id=? AND kind='meal'", (m["ingredients"], mid))
+        c.execute("UPDATE plan_lunch SET ing_snapshot=? WHERE meal_id=? AND kind='meal'", (m["ingredients"], mid))
     c.execute("DELETE FROM meals WHERE id=?", (mid,))
     drop_undo(c)  # restoring an older snapshot would bring back plan rows without the ingredient snapshot
     c.commit()
@@ -769,9 +776,11 @@ def parse_day(s):
         abort(400, "Invalid date.")
 
 
-def save_entry(c, d, kind, meal_id, label, locked=0):
-    c.execute("INSERT OR REPLACE INTO plan(day,kind,meal_id,label,locked,ing_snapshot) VALUES (?,?,?,?,?,'')",
-              (d.isoformat(), kind, meal_id, label, int(bool(locked))))
+def save_entry(c, d, kind, meal_id, label, locked=0, cook=None):
+    """Write a plan row. The per-day cook is kept from the row being replaced unless `cook` is given."""
+    c.execute("INSERT OR REPLACE INTO plan(day,kind,meal_id,label,locked,ing_snapshot,cook) "
+              "VALUES (?,?,?,?,?,'',COALESCE(?, (SELECT cook FROM plan WHERE day=?), ''))",
+              (d.isoformat(), kind, meal_id, label, int(bool(locked)), cook, d.isoformat()))
 
 
 def sync_leftovers(c, d, meal_id, span, name):
@@ -822,14 +831,15 @@ def put_day(day):
     elif old and old["kind"] == "leftover" and not (kind == "leftover" and body.get("meal_id") == old["meal_id"]):
         sync_leftovers(c, d, old["meal_id"], 0, "")
     locked = body.get("locked", bool(old and old["locked"]))
+    cook = str(body["cook"]).strip()[:40] if "cook" in body else None  # None keeps the current one
     skipped = []
     if kind == "custom" and (body.get("label") or "").strip():
-        save_entry(c, d, "custom", None, body["label"].strip()[:80], locked)
+        save_entry(c, d, "custom", None, body["label"].strip()[:80], locked, cook)
     elif kind in ("meal", "leftover"):
         m = c.execute("SELECT * FROM meals WHERE id=?", (body.get("meal_id"),)).fetchone()
         if not m:
             abort(400, "Unknown meal.")
-        save_entry(c, d, kind, m["id"], m["name"], locked)
+        save_entry(c, d, kind, m["id"], m["name"], locked, cook)
         if kind == "meal":
             skipped = sync_leftovers(c, d, m["id"], span_of(m), m["name"])
     else:  # empty the day
@@ -846,7 +856,7 @@ def swap_days():
     c = db()
     rows = {}
     for d in (a, b):
-        r = c.execute("SELECT kind, meal_id, label, locked FROM plan WHERE day=?", (d.isoformat(),)).fetchone()
+        r = c.execute("SELECT kind, meal_id, label, locked, cook FROM plan WHERE day=?", (d.isoformat(),)).fetchone()
         if r and r["kind"] == "leftover":
             abort(400, "Leftover days move together with their meal. Move the meal instead.")
         rows[d] = r
@@ -859,7 +869,7 @@ def swap_days():
         if r is None:
             c.execute("DELETE FROM plan WHERE day=?", (d.isoformat(),))
             continue
-        save_entry(c, d, r["kind"], r["meal_id"], r["label"], r["locked"])
+        save_entry(c, d, r["kind"], r["meal_id"], r["label"], r["locked"], r["cook"])
         if r["kind"] == "meal":
             m = c.execute("SELECT * FROM meals WHERE id=?", (r["meal_id"],)).fetchone()
             if m:
@@ -867,6 +877,83 @@ def swap_days():
     drop_undo(c)
     c.commit()
     return jsonify(ok=True, skipped=skipped)
+
+
+# ---------------------------------------------------------------- lunch, cooks, prep-ahead reminders
+
+@app.put("/api/lunch/<day>")
+def put_lunch(day):
+    """The lunch slot is filled by hand (meal, leftovers or a note); automatic planning never touches it."""
+    d = parse_day(day)
+    body = request.get_json(silent=True) or {}
+    kind = body.get("kind")
+    c = db()
+    if kind == "custom" and (body.get("label") or "").strip():
+        c.execute("INSERT OR REPLACE INTO plan_lunch(day,kind,meal_id,label,ing_snapshot) VALUES (?,'custom',NULL,?,'')",
+                  (d.isoformat(), body["label"].strip()[:80]))
+    elif kind in ("meal", "leftover"):
+        m = c.execute("SELECT id, name FROM meals WHERE id=?", (body.get("meal_id"),)).fetchone()
+        if not m:
+            abort(400, "Unknown meal.")
+        c.execute("INSERT OR REPLACE INTO plan_lunch(day,kind,meal_id,label,ing_snapshot) VALUES (?,?,?,?,'')",
+                  (d.isoformat(), kind, m["id"], m["name"]))
+    else:
+        c.execute("DELETE FROM plan_lunch WHERE day=?", (d.isoformat(),))
+    c.commit()
+    return jsonify(ok=True)
+
+
+def lunch_map(c, start, end):
+    rows = c.execute(
+        "SELECT l.day, l.kind, l.meal_id, COALESCE(m.name, l.label) AS name FROM plan_lunch l "
+        "LEFT JOIN meals m ON m.id = l.meal_id WHERE l.day BETWEEN ? AND ?", (start.isoformat(), end.isoformat()))
+    return {r["day"]: dict(r) for r in rows}
+
+
+def cook_overrides(c, start, end):
+    """{day: name} for days where a cook was chosen by hand."""
+    return {r["day"]: r["cook"] for r in c.execute(
+        "SELECT day, cook FROM plan WHERE cook != '' AND day BETWEEN ? AND ?", (start.isoformat(), end.isoformat()))}
+
+
+def cook_map(c, start, end, S):
+    """{day: name}: the weekday rule from Settings, overridden by a cook chosen for that day."""
+    rules = parse_cooks(S["cooks"])
+    out, d = {}, start
+    while d <= end:
+        if d.weekday() in rules:
+            out[d.isoformat()] = rules[d.weekday()]
+        d += timedelta(1)
+    out.update(cook_overrides(c, start, end))
+    return out
+
+
+def prep_reminders(c, start, end):
+    """{day: [{text, meal, for_day, slot}]}: a meal's 'prepare ahead' note, shown the chosen number of days before."""
+    out = {}
+    for slot, table in (("dinner", "plan"), ("lunch", "plan_lunch")):
+        rows = c.execute(
+            f"SELECT p.day, m.name, m.prep_ahead, m.prep_ahead_days FROM {table} p JOIN meals m ON m.id = p.meal_id "
+            "WHERE p.kind='meal' AND m.prep_ahead != '' AND p.day BETWEEN ? AND ?",
+            ((start + timedelta(1)).isoformat(), (end + timedelta(SPILL)).isoformat()))
+        for r in rows:
+            for_day = date.fromisoformat(r["day"])
+            due = for_day - timedelta(max(1, min(3, r["prep_ahead_days"])))
+            if start <= due <= end:
+                out.setdefault(due.isoformat(), []).append(
+                    {"text": r["prep_ahead"], "meal": r["name"], "for_day": r["day"], "slot": slot})
+    return out
+
+
+@app.get("/api/plan/extras")
+def plan_extras():
+    """What the calendar shows besides the dinner plan: lunches, cooks and prepare-ahead reminders."""
+    start, end = parse_day(request.args.get("start")), parse_day(request.args.get("end"))
+    if (end - start).days > 400:
+        abort(400, "That range is too long.")
+    c = db()
+    return jsonify(lunch=lunch_map(c, start, end), cook=cook_map(c, start, end, get_settings(c)),
+                   override=cook_overrides(c, start, end), prep=prep_reminders(c, start, end))
 
 
 # ---------------------------------------------------------------- planning
@@ -1080,7 +1167,7 @@ def api_suggest():
     exclude = {e["meal_id"] for e in [cur.pop(d, None)] if e and e["meal_id"]}  # not the meal that is there now
     today = client_today().isoformat()
     last = {r["meal_id"]: r["day"] for r in c.execute(
-        "SELECT meal_id, MAX(day) AS day FROM plan WHERE kind='meal' AND day<=? GROUP BY meal_id", (today,))}
+        f"SELECT meal_id, MAX(day) AS day FROM ({SERVED_SQL}) WHERE day<=? GROUP BY meal_id", (today,))}
     wanted = {t for days, t in parse_rules(S["rules"]) if d.weekday() in days}
     out = []
     while len(out) < n and any(mid not in exclude for mid in meals):
@@ -1112,8 +1199,8 @@ def api_undo():
         abort(400, "Nothing to undo.")
     c.execute("DELETE FROM plan WHERE day BETWEEN ? AND ?", (snap["lo"], snap["hi"]))
     for r in snap["rows"]:
-        c.execute("INSERT OR REPLACE INTO plan(day,kind,meal_id,label,locked,ing_snapshot) VALUES (?,?,?,?,?,?)",
-                  (r["day"], r["kind"], r["meal_id"], r["label"], r["locked"], r.get("ing_snapshot", "")))
+        c.execute("INSERT OR REPLACE INTO plan(day,kind,meal_id,label,locked,ing_snapshot,cook) VALUES (?,?,?,?,?,?,?)",
+                  (r["day"], r["kind"], r["meal_id"], r["label"], r["locked"], r.get("ing_snapshot", ""), r.get("cook", "")))
     c.execute("DELETE FROM settings WHERE key='undo'")
     c.commit()
     return jsonify(ok=True, restored=len(snap["rows"]))
@@ -1134,11 +1221,12 @@ def shopping():
     weeks = to_int(request.args.get("weeks"), 1, 6, 1)
     we = ws + timedelta(7 * weeks - 1)
     scope = f"{ws.isoformat()}:{weeks}"
+    part = ("SELECT p.day AS day, COALESCE(m.name, p.label) AS name, COALESCE(m.ingredients, p.ing_snapshot) AS ingredients, "
+            "COALESCE(m.servings, 0) AS servings FROM {t} p LEFT JOIN meals m ON m.id = p.meal_id "
+            "WHERE p.kind='meal' AND p.day BETWEEN ? AND ?")
     rows = c.execute(
-        "SELECT COALESCE(m.name, p.label) AS name, COALESCE(m.ingredients, p.ing_snapshot) AS ingredients, "
-        "COALESCE(m.servings, 0) AS servings FROM plan p LEFT JOIN meals m ON m.id = p.meal_id "
-        "WHERE p.kind='meal' AND p.day BETWEEN ? AND ? ORDER BY p.day",
-        (ws.isoformat(), we.isoformat()),
+        f"SELECT * FROM ({part.format(t='plan')} UNION ALL {part.format(t='plan_lunch')}) ORDER BY day",
+        (ws.isoformat(), we.isoformat()) * 2,
     ).fetchall()  # leftover days are kind='leftover' and never contribute
     syn, system = build_synonyms(S["synonyms"]), S["unit_system"]
     pantry = {parse_ingredient(p, (), syn)[0] for p in S["pantry"]}
@@ -1224,6 +1312,7 @@ def backup():
         "format": "mealplanner-backup", "version": SCHEMA_VERSION,
         "meals": [dict(r) for r in c.execute("SELECT * FROM meals ORDER BY id")],
         "plan": [dict(r) for r in c.execute("SELECT * FROM plan ORDER BY day")],
+        "lunch": [dict(r) for r in c.execute("SELECT * FROM plan_lunch ORDER BY day")],
         "settings": get_settings(c),
         "checked": [dict(r) for r in c.execute("SELECT * FROM checked")],
         "extras": [dict(r) for r in c.execute("SELECT * FROM extras ORDER BY id")],
@@ -1239,7 +1328,7 @@ def restore():
         abort(400, "This is not a meal planner backup file.")
     c = db()
     try:
-        for t in ("plan", "meals", "checked", "extras", "settings"):
+        for t in ("plan", "plan_lunch", "meals", "checked", "extras", "settings"):
             c.execute(f"DELETE FROM {t}")
         ids = set()
         for m in d["meals"]:
@@ -1252,9 +1341,16 @@ def restore():
             day = parse_day(r.get("day"))
             if r.get("kind") not in ("meal", "leftover", "custom"):
                 raise ValueError("A planned day has an unknown type.")
-            c.execute("INSERT INTO plan(day,kind,meal_id,label,locked,ing_snapshot) VALUES (?,?,?,?,?,?)",
+            c.execute("INSERT INTO plan(day,kind,meal_id,label,locked,ing_snapshot,cook) VALUES (?,?,?,?,?,?,?)",
                       (day.isoformat(), r["kind"], r.get("meal_id"), str(r.get("label") or "")[:120],
-                       int(bool(r.get("locked"))), str(r.get("ing_snapshot") or "")))
+                       int(bool(r.get("locked"))), str(r.get("ing_snapshot") or ""), str(r.get("cook") or "")[:40]))
+        for r in d.get("lunch") or []:
+            day = parse_day(r.get("day"))
+            if r.get("kind") not in ("meal", "leftover", "custom"):
+                raise ValueError("A lunch has an unknown type.")
+            c.execute("INSERT INTO plan_lunch(day,kind,meal_id,label,ing_snapshot) VALUES (?,?,?,?,?)",
+                      (day.isoformat(), r["kind"], r.get("meal_id"), str(r.get("label") or "")[:120],
+                       str(r.get("ing_snapshot") or "")))
         for r in d.get("checked") or []:
             c.execute("INSERT OR IGNORE INTO checked(scope,key) VALUES (?,?)", (str(r["scope"]), str(r["key"])))
         for r in d.get("extras") or []:
@@ -1264,7 +1360,7 @@ def restore():
     except (ValueError, KeyError, TypeError, sqlite3.Error) as e:
         c.rollback()
         abort(400, f"The backup could not be restored: {e}")
-    return jsonify(ok=True, meals=len(d["meals"]), days=len(d.get("plan") or []))
+    return jsonify(ok=True, meals=len(d["meals"]), days=len(d.get("plan") or []) + len(d.get("lunch") or []))
 
 
 def _ics(s):
@@ -1278,18 +1374,25 @@ def calendar_feed():
         "SELECT p.day, p.kind, COALESCE(m.name, p.label) AS name, m.url AS url FROM plan p "
         "LEFT JOIN meals m ON m.id = p.meal_id WHERE p.day BETWEEN ? AND ? ORDER BY p.day",
         ((today - timedelta(60)).isoformat(), (today + timedelta(400)).isoformat())).fetchall()
+    lunches = db().execute(
+        "SELECT p.day, p.kind, COALESCE(m.name, p.label) AS name, m.url AS url FROM plan_lunch p "
+        "LEFT JOIN meals m ON m.id = p.meal_id WHERE p.day BETWEEN ? AND ? ORDER BY p.day",
+        ((today - timedelta(60)).isoformat(), (today + timedelta(400)).isoformat())).fetchall()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Family Meal Planner//EN", "CALSCALE:GREGORIAN",
            "X-WR-CALNAME:Meal plan"]
-    for r in rows:
-        d = date.fromisoformat(r["day"])
-        summary = f"Leftovers: {r['name']}" if r["kind"] == "leftover" else r["name"]
-        out += ["BEGIN:VEVENT", f"UID:{r['day']}@mealplanner", f"DTSTAMP:{stamp}",
-                f"DTSTART;VALUE=DATE:{d:%Y%m%d}", f"DTEND;VALUE=DATE:{d + timedelta(1):%Y%m%d}",
-                f"SUMMARY:{_ics(summary)}"]
-        if r["url"]:
-            out.append(f"URL:{r['url']}")
-        out.append("END:VEVENT")
+    for slot, group in (("", rows), ("-lunch", lunches)):
+        for r in group:
+            d = date.fromisoformat(r["day"])
+            summary = f"Leftovers: {r['name']}" if r["kind"] == "leftover" else r["name"]
+            if slot:
+                summary = f"Lunch: {summary}"
+            out += ["BEGIN:VEVENT", f"UID:{r['day']}{slot}@mealplanner", f"DTSTAMP:{stamp}",
+                    f"DTSTART;VALUE=DATE:{d:%Y%m%d}", f"DTEND;VALUE=DATE:{d + timedelta(1):%Y%m%d}",
+                    f"SUMMARY:{_ics(summary)}"]
+            if r["url"]:
+                out.append(f"URL:{r['url']}")
+            out.append("END:VEVENT")
     out.append("END:VCALENDAR")
     return Response("\r\n".join(out) + "\r\n", mimetype="text/calendar; charset=utf-8")
 

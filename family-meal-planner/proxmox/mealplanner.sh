@@ -2,7 +2,7 @@
 # Meal Planner - Proxmox VE LXC installer (community-scripts style)
 #
 # Run in the Proxmox VE host shell:
-#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/YOUR-USER/family-meal-planner/main/proxmox/mealplanner.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Jacob4Redstone/Family-Meal-Planner/refs/heads/main/family-meal-planner/proxmox/mealplanner.sh)"
 # Update an existing container:
 #   CTID=105 bash mealplanner.sh update
 #
@@ -10,7 +10,7 @@
 set -Eeuo pipefail
 
 APP="Meal Planner"
-REPO="${REPO:-https://github.com/YOUR-USER/family-meal-planner.git}"
+REPO="${REPO:-https://github.com/Jacob4Redstone/family-meal-planner.git}"
 BRANCH="${BRANCH:-main}"
 CT_HOSTNAME="${CT_HOSTNAME:-mealplanner}"
 CT_CPU="${CT_CPU:-1}"

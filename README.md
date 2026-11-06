@@ -1,5 +1,7 @@
 # Family-Meal-Planner
 AI generated code
+<img width="1920" height="760" alt="example-meals-one-month" src="https://github.com/user-attachments/assets/502a2e15-33a5-40f5-8b05-760991ee5186" />
+
 -------------
 How it behaves
 

@@ -16,9 +16,8 @@ Import and export: you can paste meals in bulk, in your own “Category: / Lefto
 Deploying
 
 Docker: run docker compose up -d --build and open port 8080. The data is one SQLite file in a named volume.
-Proxmox: push the folder to your own Git repo and set REPO in proxmox/mealplanner.sh. Then run it on the Proxmox host.
-It finds storage and a Debian 12 template, creates an unprivileged container, and sets the app up as a systemd service.
-It prints the URL when it finishes, and CTID=<id> bash mealplanner.sh update updates it later.
-It follows the community-scripts look, but it is standalone rather than using their build.func. That framework only runs scripts merged into their own repository.
+Proxmox: Open Shell run:
+export COMMUNITY_SCRIPTS_URL=https://raw.githubusercontent.com/Jacob4Redstone/Family-Meal-Planner/main/family-meal-planner
+bash -c "$(curl -fsSL $COMMUNITY_SCRIPTS_URL/ct/mealplanner.sh)"
 
 There is no login, so keep it on your home network or put it behind a reverse proxy with authentication.

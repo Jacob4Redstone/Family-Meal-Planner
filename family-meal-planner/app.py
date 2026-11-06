@@ -8,6 +8,7 @@ import random
 import re
 import socket
 import sqlite3
+import time
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
@@ -20,6 +21,8 @@ GAP_DAYS = int(os.environ.get("GAP_DAYS", "21"))  # a meal may not repeat within
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "")  # optional HTTP basic-auth password (any user name)
 ENABLE_URL_IMPORT = os.environ.get("ENABLE_URL_IMPORT", "").lower() in ("1", "true", "yes")
 SPILL = 3  # a meal can make leftovers for at most this many following days
+UNDO_SECONDS = 3600  # "Undo last planning" is offered for this long (and only until the plan changes otherwise)
+SHOPPING_KEEP_DAYS = 90  # ticks and extra items of older weeks are deleted
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_BODY_BYTES", str(5 * 1024 * 1024)))
@@ -83,6 +86,7 @@ def init_db():
             for stmt in V2_STATEMENTS:
                 conn.execute(stmt)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        prune_shopping(conn)
         conn.commit()
     finally:
         conn.close()
@@ -231,15 +235,57 @@ def settings_get():
 
 @app.put("/api/settings")
 def settings_put():
-    s = clean_settings(request.get_json(silent=True) or {})
-    save_settings(db(), s)
-    db().commit()
+    c = db()
+    old = get_settings(c)
+    # Keys that are left out keep their stored value.
+    s = clean_settings({**old, **(request.get_json(silent=True) or {})})
+    if s["week_start"] != old["week_start"]:
+        rekey_shopping(c, s["week_start"])
+    save_settings(c, s)
+    c.commit()
     return jsonify(s)
 
 
 def week_start_of(d, ws):
     """First day of the week containing d (ws: 0 = Monday, 6 = Sunday)."""
     return d - timedelta((d.weekday() - ws) % 7)
+
+
+def client_today():
+    """The user's own 'today' (the browser sends it), because the server may run in another time zone."""
+    v = request.args.get("today")
+    if v is None:
+        body = request.get_json(silent=True)
+        v = body.get("today") if isinstance(body, dict) else None
+    return parse_day(v) if v else date.today()
+
+
+def drop_undo(c):
+    """Any plan change other than planning itself makes the stored undo snapshot stale."""
+    c.execute("DELETE FROM settings WHERE key='undo'")
+
+
+def prune_shopping(c):
+    """Delete ticks and extra items of weeks that are long over (scope = 'YYYY-MM-DD:weeks')."""
+    cutoff = (date.today() - timedelta(SHOPPING_KEEP_DAYS)).isoformat()
+    c.execute("DELETE FROM extras WHERE substr(scope, 1, 10) < ?", (cutoff,))
+    c.execute("DELETE FROM checked WHERE substr(scope, 1, 10) < ?", (cutoff,))
+    c.execute("DELETE FROM checked WHERE key LIKE 'extra:%' AND CAST(substr(key, 7) AS INTEGER) NOT IN (SELECT id FROM extras)")
+
+
+def rekey_shopping(c, ws):
+    """Week boundaries moved: extra items (and their ticks) follow the week that now contains them;
+    ingredient ticks are dropped, because they no longer describe the same days."""
+    c.execute("DELETE FROM checked WHERE key NOT LIKE 'extra:%'")
+    for r in c.execute("SELECT DISTINCT scope FROM extras").fetchall():
+        start, _, weeks = r["scope"].partition(":")
+        try:
+            new = f"{week_start_of(date.fromisoformat(start), ws).isoformat()}:{weeks}"
+        except ValueError:
+            continue
+        if new != r["scope"]:
+            c.execute("UPDATE extras SET scope=? WHERE scope=?", (new, r["scope"]))
+            c.execute("UPDATE OR IGNORE checked SET scope=? WHERE scope=? AND key LIKE 'extra:%'", (new, r["scope"]))
 
 
 # ---------------------------------------------------------------- meals
@@ -312,8 +358,8 @@ def insert_meal(c, v, mid=None):
     return cur.lastrowid
 
 
-def select_meals(c):
-    today = date.today().isoformat()
+def select_meals(c, today):
+    today = today.isoformat()
     return c.execute(
         "SELECT m.*, "
         "(SELECT MAX(day) FROM plan p WHERE p.meal_id=m.id AND p.kind='meal' AND p.day<=?) AS last_served, "
@@ -323,7 +369,7 @@ def select_meals(c):
 
 @app.get("/api/meals")
 def list_meals():
-    return jsonify([meal_dict(r) for r in select_meals(db())])
+    return jsonify([meal_dict(r) for r in select_meals(db(), client_today())])
 
 
 @app.post("/api/meals")
@@ -340,17 +386,24 @@ def add_meal():
 @app.put("/api/meals/<int:mid>")
 def edit_meal(mid):
     v = clean_meal(request.get_json(silent=True) or {})
+    today = client_today()
     c = db()
     try:
-        c.execute(f"UPDATE meals SET {','.join(k + '=?' for k in COLS)} WHERE id=?", [v[k] for k in COLS] + [mid])
+        cur = c.execute(f"UPDATE meals SET {','.join(k + '=?' for k in COLS)} WHERE id=?", [v[k] for k in COLS] + [mid])
     except sqlite3.IntegrityError:
         abort(409, "A meal with this name already exists.")
-    # Keep the plan consistent: new name on the calendar, leftover days follow the new setting.
+    if cur.rowcount == 0:
+        abort(404, "Meal not found.")
+    # Keep the plan consistent: new name on the calendar; leftover days follow the new setting,
+    # but only from today on (days that are over stay as they were).
     c.execute("UPDATE plan SET label=? WHERE meal_id=?", (v["name"], mid))
     span = span_of({"leftovers": v["leftovers"], "leftover_days": v["leftover_days"]})
-    skipped = []
-    for r in c.execute("SELECT day FROM plan WHERE meal_id=? AND kind='meal'", (mid,)).fetchall():
+    skipped, before = [], c.total_changes
+    for r in c.execute("SELECT day FROM plan WHERE meal_id=? AND kind='meal' AND day>=?",
+                       (mid, today.isoformat())).fetchall():
         skipped += sync_leftovers(c, date.fromisoformat(r["day"]), mid, span, v["name"])
+    if c.total_changes != before:
+        drop_undo(c)
     c.commit()
     return jsonify(ok=True, skipped=skipped)
 
@@ -362,6 +415,7 @@ def delete_meal(mid):
     if m:  # planned days keep the name and the ingredients, so the calendar and shopping list stay intact
         c.execute("UPDATE plan SET ing_snapshot=? WHERE meal_id=? AND kind='meal'", (m["ingredients"], mid))
     c.execute("DELETE FROM meals WHERE id=?", (mid,))
+    drop_undo(c)  # restoring an older snapshot would bring back plan rows without the ingredient snapshot
     c.commit()
     return jsonify(ok=True)
 
@@ -593,8 +647,11 @@ def put_day(day):
     kind = body.get("kind")
     c = db()
     old = c.execute("SELECT kind, meal_id, locked FROM plan WHERE day=?", (d.isoformat(),)).fetchone()
-    # Replacing a meal frees the leftover days it had reserved.
+    # Replacing a meal frees the leftover days it had reserved. Replacing or clearing a leftover day
+    # frees the leftover days that follow it, so no orphaned tail is left behind.
     if old and old["kind"] == "meal":
+        sync_leftovers(c, d, old["meal_id"], 0, "")
+    elif old and old["kind"] == "leftover" and not (kind == "leftover" and body.get("meal_id") == old["meal_id"]):
         sync_leftovers(c, d, old["meal_id"], 0, "")
     locked = body.get("locked", bool(old and old["locked"]))
     skipped = []
@@ -609,6 +666,7 @@ def put_day(day):
             skipped = sync_leftovers(c, d, m["id"], span_of(m), m["name"])
     else:  # empty the day
         c.execute("DELETE FROM plan WHERE day=?", (d.isoformat(),))
+    drop_undo(c)
     c.commit()
     return jsonify(ok=True, skipped=skipped)
 
@@ -627,6 +685,7 @@ def swap_days():
     for d, r in rows.items():
         if r and r["kind"] == "meal":
             sync_leftovers(c, d, r["meal_id"], 0, "")
+    skipped = []
     for d, other in ((a, b), (b, a)):
         r = rows[other]
         if r is None:
@@ -636,9 +695,10 @@ def swap_days():
         if r["kind"] == "meal":
             m = c.execute("SELECT * FROM meals WHERE id=?", (r["meal_id"],)).fetchone()
             if m:
-                sync_leftovers(c, d, m["id"], span_of(m), m["name"])
+                skipped += sync_leftovers(c, d, m["id"], span_of(m), m["name"])
+    drop_undo(c)
     c.commit()
-    return jsonify(ok=True)
+    return jsonify(ok=True, skipped=skipped)
 
 
 # ---------------------------------------------------------------- planning
@@ -717,7 +777,7 @@ def leftover_source(orig, dd):
 def snapshot_for_undo(c, lo, hi):
     rows = [dict(r) for r in c.execute("SELECT * FROM plan WHERE day BETWEEN ? AND ?", (lo.isoformat(), hi.isoformat()))]
     c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('undo', ?)",
-              (json.dumps({"lo": lo.isoformat(), "hi": hi.isoformat(), "rows": rows}),))
+              (json.dumps({"lo": lo.isoformat(), "hi": hi.isoformat(), "rows": rows, "t": time.time()}),))
 
 
 def generate(start, end, replace, reroll=False):
@@ -767,7 +827,7 @@ def generate(start, end, replace, reroll=False):
             if dd >= start:
                 cur[dd] = written[dd] = {"kind": "leftover", "meal_id": m["id"], "label": m["name"], "locked": 0}
 
-    if not reroll:  # a meal just before the range may still owe leftover days inside it
+    if replace and not reroll:  # Replace deleted the range, so meals just before it owe their leftover days again
         for k in sorted(k for k in cur if start - timedelta(SPILL) <= k < start):
             if cur[k]["kind"] == "meal":
                 reserve(k, cur[k])
@@ -811,13 +871,25 @@ def api_generate():
     return jsonify(planned=planned, reused=reused, skipped_locked=skipped_locked)
 
 
+def load_undo(c):
+    """The stored undo snapshot, or None when there is none, it is too old, or the plan changed since."""
+    row = c.execute("SELECT value FROM settings WHERE key='undo'").fetchone()
+    if not row:
+        return None
+    snap = json.loads(row["value"])
+    if time.time() - snap.get("t", 0) > UNDO_SECONDS:
+        drop_undo(c)
+        c.commit()
+        return None
+    return snap
+
+
 @app.post("/api/undo")
 def api_undo():
     c = db()
-    row = c.execute("SELECT value FROM settings WHERE key='undo'").fetchone()
-    if not row:
+    snap = load_undo(c)
+    if not snap:
         abort(400, "Nothing to undo.")
-    snap = json.loads(row["value"])
     c.execute("DELETE FROM plan WHERE day BETWEEN ? AND ?", (snap["lo"], snap["hi"]))
     for r in snap["rows"]:
         c.execute("INSERT OR REPLACE INTO plan(day,kind,meal_id,label,locked,ing_snapshot) VALUES (?,?,?,?,?,?)",
@@ -829,21 +901,39 @@ def api_undo():
 
 @app.get("/api/undo")
 def api_can_undo():
-    return jsonify(available=bool(db().execute("SELECT 1 FROM settings WHERE key='undo'").fetchone()))
+    return jsonify(available=load_undo(db()) is not None)
 
 
 # ---------------------------------------------------------------- shopping list
 
 # unit -> (canonical unit, factor); grams and millilitres are summed and shown as kg / l when large
 UNIT_ALIASES = {
-    "g": ("g", 1), "kg": ("g", 1000), "ml": ("ml", 1), "cl": ("ml", 10), "dl": ("ml", 100), "l": ("ml", 1000),
-    "tsp": ("tsp", 1), "tsk": ("tsp", 1), "tbsp": ("tbsp", 1), "spsk": ("tbsp", 1), "cup": ("cup", 1),
-    "cups": ("cup", 1), "oz": ("oz", 1), "lb": ("lb", 1), "stk": ("pcs", 1), "pcs": ("pcs", 1),
+    "g": ("g", 1), "gram": ("g", 1), "grams": ("g", 1), "gramme": ("g", 1), "grammes": ("g", 1),
+    "kg": ("g", 1000), "kilo": ("g", 1000), "kilos": ("g", 1000), "kilogram": ("g", 1000), "kilograms": ("g", 1000),
+    "ml": ("ml", 1), "milliliter": ("ml", 1), "milliliters": ("ml", 1), "millilitre": ("ml", 1), "millilitres": ("ml", 1),
+    "cl": ("ml", 10), "centiliter": ("ml", 10), "centiliters": ("ml", 10), "centilitre": ("ml", 10), "centilitres": ("ml", 10),
+    "dl": ("ml", 100), "deciliter": ("ml", 100), "deciliters": ("ml", 100), "decilitre": ("ml", 100), "decilitres": ("ml", 100),
+    "l": ("ml", 1000), "liter": ("ml", 1000), "liters": ("ml", 1000), "litre": ("ml", 1000), "litres": ("ml", 1000),
+    "tsp": ("tsp", 1), "tsps": ("tsp", 1), "tsk": ("tsp", 1), "teaspoon": ("tsp", 1), "teaspoons": ("tsp", 1),
+    "tbsp": ("tbsp", 1), "tbsps": ("tbsp", 1), "tbs": ("tbsp", 1), "tbl": ("tbsp", 1), "spsk": ("tbsp", 1),
+    "tablespoon": ("tbsp", 1), "tablespoons": ("tbsp", 1),
+    "cup": ("cup", 1), "cups": ("cup", 1),
+    "oz": ("oz", 1), "ounce": ("oz", 1), "ounces": ("oz", 1),
+    "lb": ("lb", 1), "lbs": ("lb", 1), "pound": ("lb", 1), "pounds": ("lb", 1),
+    "stk": ("pcs", 1), "pcs": ("pcs", 1), "piece": ("pcs", 1), "pieces": ("pcs", 1),
     "can": ("can", 1), "cans": ("can", 1), "pack": ("pack", 1), "packs": ("pack", 1),
+    "clove": ("clove", 1), "cloves": ("clove", 1), "pinch": ("pinch", 1), "pinches": ("pinch", 1),
+    "bunch": ("bunch", 1), "bunches": ("bunch", 1), "handful": ("handful", 1), "handfuls": ("handful", 1),
+    "slice": ("slice", 1), "slices": ("slice", 1), "sprig": ("sprig", 1), "sprigs": ("sprig", 1),
+    "head": ("head", 1), "heads": ("head", 1),
 }
+PLURAL_UNITS = {"clove": "cloves", "pinch": "pinches", "bunch": "bunches", "handful": "handfuls", "slice": "slices",
+                "sprig": "sprigs", "head": "heads", "can": "cans", "pack": "packs"}
 FRACTIONS = {"½": 0.5, "¼": 0.25, "¾": 0.75, "⅓": 1 / 3, "⅔": 2 / 3, "⅛": 0.125}
 NUM = r"(?:\d+\s+\d+/\d+|\d+/\d+|\d*\s*[½¼¾⅓⅔⅛]|\d+(?:[.,]\d+)?)"
-QTY = re.compile(rf"^({NUM})\s*(?:[x×]\s+)?(.*)$", re.I)
+# amount, optional range end ("3-4", "3 to 4"), rest of the line
+QTY = re.compile(rf"^({NUM})(?:\s*(?:-|–|—|to)\s*({NUM}))?\s*(.*)$", re.I)
+NOTE_COMMA = re.compile(r"(?<!\d),|,(?!\d)")  # a comma that is not a decimal comma
 
 
 def to_number(s):
@@ -873,24 +963,39 @@ def singular(name):
     return " ".join(words)
 
 
-def parse_ingredient(line, extra_units=()):
-    """'500 g minced beef' -> (key, 'Minced beef', 500.0, 'g'); '1/2 onion' -> ('onion', 'Onion', 0.5, '')."""
-    line = clean_ingredient(line)
-    qty, unit, name = None, "", line
+def split_quantity(line, extra_units=()):
+    """'2 cups of flour' -> ('flour', 2, 'cup'); '3-4 cloves garlic' -> ('garlic', 4, 'clove');
+    '2 x 400 g tomatoes' -> ('tomatoes', 800, 'g'); 'Onion' -> ('Onion', None, '')."""
     m = QTY.match(line)
-    if m and m.group(2).strip():
-        q = to_number(m.group(1))
-        if q is not None:
-            qty, name = q, m.group(2).strip()
-            first, _, rest = name.partition(" ")
-            u = first.lower().rstrip(".")
-            if rest and (u in UNIT_ALIASES or u in extra_units):
-                name = rest.strip()
-                if u in UNIT_ALIASES:
-                    unit, factor = UNIT_ALIASES[u]
-                    qty *= factor
-                else:
-                    unit = u
+    if not m or not m.group(3).strip():
+        return line, None, ""
+    q = to_number(m.group(2) or m.group(1))  # for a range, buy enough: use the upper end
+    if q is None:
+        return line, None, ""
+    rest = m.group(3).strip()
+    mult = re.match(r"^[x×]\s+(.+)$", rest, re.I)
+    if mult:
+        name, inner, unit = split_quantity(mult.group(1).strip(), extra_units)
+        return name, q * (1 if inner is None else inner), unit
+    first, _, after = rest.partition(" ")
+    u, after = first.lower().rstrip("."), after.strip()
+    if after and (u in UNIT_ALIASES or u in extra_units):
+        if after.lower().startswith("of "):
+            after = after[3:].strip()
+        if u in UNIT_ALIASES:
+            unit, factor = UNIT_ALIASES[u]
+            return after, q * factor, unit
+        return after, q, u
+    return rest, q, ""
+
+
+def parse_ingredient(line, extra_units=()):
+    """'500 g minced beef' -> (key, 'Minced beef', 500.0, 'g'); '1 onion, finely chopped' -> ('onion', 'Onion', 1.0, '').
+    Text in brackets and notes after a comma are ignored, so recipe-site lines merge with plain ones."""
+    full = clean_ingredient(line)
+    short = re.sub(r"\s+", " ", NOTE_COMMA.split(re.sub(r"\([^)]*\)", " ", full), 1)[0]).strip()
+    name, qty, unit = split_quantity(short or full, extra_units)
+    name = name.strip()
     return singular(name), name[:1].upper() + name[1:], qty, unit
 
 
@@ -899,7 +1004,10 @@ def fmt_qty(q, unit):
         q, unit = q / 1000, "kg"
     elif unit == "ml" and q >= 1000:
         q, unit = q / 1000, "l"
-    s = f"{round(q, 2):g}"
+    q = round(q, 2)
+    if q != 1 and unit in PLURAL_UNITS:
+        unit = PLURAL_UNITS[unit]
+    s = f"{q:g}"
     return f"{s} {unit}" if unit else s
 
 
@@ -963,6 +1071,7 @@ def shopping_check():
         db().execute("INSERT OR IGNORE INTO checked(scope,key) VALUES (?,?)", (scope, key))
     else:
         db().execute("DELETE FROM checked WHERE scope=? AND key=?", (scope, key))
+    prune_shopping(db())
     db().commit()
     return jsonify(ok=True)
 
@@ -974,6 +1083,7 @@ def extras_add():
     if not scope or not name:
         abort(400, "Write what to add.")
     cur = db().execute("INSERT INTO extras(scope,name) VALUES (?,?)", (scope, name))
+    prune_shopping(db())
     db().commit()
     return jsonify(id=cur.lastrowid), 201
 

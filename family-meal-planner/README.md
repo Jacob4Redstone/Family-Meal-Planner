@@ -49,17 +49,20 @@ Use **Settings → Download backup** (a JSON file with meals, plan, settings and
 - **Fixed days** (Settings): for example `Friday = Takeaway` puts that note on every Friday that planning fills.
 - **Pinned days:** pin a day in its dialog and planning ("Replace" or "Pick another") never changes it.
 - If you have too few meals to honour the gap, the one served longest ago is reused and you are told.
-- **Undo:** "Undo last planning" restores the days as they were before the last plan or re-roll. "Replace" asks for confirmation first.
-- Drag a day onto another to swap them (or use "Swap with another day" in the dialog). Leftover days move with their meal.
+- **Undo:** "Undo last planning" restores the days as they were before the last plan or re-roll. It is offered for one hour, and only until you change the plan in some other way (editing a day, swapping, deleting a meal), so it can never wipe later edits. "Replace" asks for confirmation first.
+- Drag a day onto another to swap them (or use "Swap with another day" in the dialog). Leftover days move with their meal; if there is no room for them you are told. Clearing a leftover day also frees the leftover days after it, and "Fill" never re-adds a leftover day you cleared (only "Replace" does).
+- Changing a meal's leftover setting only affects days from today on; the past stays as it was.
 
 All soft rules (weekdays, weekly limits, variety) are relaxed rather than leaving a day empty.
 
 ## Shopping list
 - Weeks run Monday–Sunday, or Sunday–Saturday if you choose that in Settings. Show 1, 2 or 4 weeks at once.
 - Same ingredients merge (case and simple plurals ignored). Amounts are optional and added up per unit: `500 g beef` + `0,5 kg beef` = `1 kg beef`. Grams/kilograms and millilitres/centilitres/decilitres/litres are converted; fractions (`1/2`, `1 1/2`, `½`) and decimal commas work. Add your own units in Settings.
+- Lines copied from recipe sites work too: long unit names (`2 tablespoons`, `200 grams`), ranges (`3-4 cloves` counts 4), `2 x 400 g`, `2 cups of flour`, text in brackets (`1 (14 oz) can beans`) and notes after a comma (`1 onion, finely chopped`) are understood, so they merge with plain `onion`.
 - **Household size** (Settings) scales amounts for meals that state their number of servings.
 - **Things you always have** (Settings) never appear on the list.
-- Ticks and extra items ("washing-up liquid") are stored on the server, so every phone shows the same list. Without a connection the last loaded list stays available (the page is installable as an app).
+- Ticks and extra items ("washing-up liquid") are stored on the server, so every phone shows the same list. They are cleaned up automatically about three months after their week. Changing the first day of the week in Settings resets ingredient ticks; extra items are kept.
+- **Offline use and "install as app" need HTTPS** (or `http://localhost`). Browsers refuse service workers on plain `http://server:8080`, so on a normal home-network setup the planner works as usual but without those two features. To get them, put it behind an HTTPS reverse proxy (or a tunnel that provides HTTPS). Settings shows whether they are available on the address you are using.
 
 ## Calendar feed
 Settings shows an address ending in `/calendar.ics`. Subscribe to it in a calendar app to see the plan there.

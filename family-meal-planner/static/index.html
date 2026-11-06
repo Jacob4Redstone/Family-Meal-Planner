@@ -12,6 +12,7 @@
 --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 @media(prefers-color-scheme:dark){:root{--ink:#e6ece8;--muted:#9aa8a1;--paper:#13191b;--card:#1a2124;--line:#34403f;--blue:#8dbbe6;--on-blue:#0f1f2c;--stripe:#222b2c;--today:#8dbbe6}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;font:16px/1.45 var(--sans);background:var(--paper);color:var(--ink)}
 header{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1.5rem;padding:.6rem 1rem;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5}
 header h1{font:700 1.2rem var(--serif);margin:0}
@@ -215,6 +216,9 @@ fieldset{border:0;padding:0;margin:.6rem 0}
         <div class="actions"><button class="btn primary" type="submit">Save settings</button></div>
       </form>
 
+      <h3>Offline use and installing</h3>
+      <p class="hint" id="pwaStatus"></p>
+
       <h3>Calendar feed</h3>
       <p class="hint">Subscribe to this address in your phone or calendar app to see the plan there:</p>
       <input id="icsUrl" readonly aria-label="Calendar feed address">
@@ -360,7 +364,7 @@ $$('[data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());
 
 /* ---------- meals data ---------- */
 async function loadMeals(){
-  meals=await api('/meals');
+  meals=await api('/meals?today='+iso(new Date()));
   $('#mealNames').innerHTML=meals.map(m=>`<option value="${esc(m.name)}">`).join('');
   const cats=[...new Set(meals.map(m=>m.category).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   $('#catNames').innerHTML=cats.map(c=>`<option value="${esc(c)}">`).join('');
@@ -369,6 +373,9 @@ async function loadMeals(){
   sel.value=cats.includes(v)?v:'';
 }
 async function refreshUndo(){try{$('#undoPlan').hidden=!(await api('/undo')).available}catch{}}
+function warnSkipped(r){
+  if(r&&r.skipped&&r.skipped.length)toast(`Leftovers could not be reserved on ${r.skipped.map(s=>short(parseD(s))).join(', ')}, because that day is already planned.`);
+}
 
 /* ---------- calendar ---------- */
 let calReq=0;
@@ -398,7 +405,7 @@ async function renderCalendar(){
     h+='</div>';
   }
   $('#cal').innerHTML=h;
-  setHash();
+  setHash();refreshUndo();
 }
 $('#cal').addEventListener('click',e=>{
   const wk=e.target.closest('.wk');if(wk){weekStart=parseD(wk.dataset.week);return showTab('shopping')}
@@ -414,7 +421,7 @@ $('#cal').addEventListener('drop',guard(async e=>{
   const t=dayOf(e);if(!t||!dragDay)return;
   e.preventDefault();const a=dragDay,b=t.dataset.day;dragDay=null;
   if(a===b)return;
-  await api('/plan/swap',{method:'POST',body:{a,b}});await renderCalendar();
+  warnSkipped(await api('/plan/swap',{method:'POST',body:{a,b}}));await renderCalendar();
 }));
 $('#prevM').onclick=guard(()=>{cur=new Date(cur.getFullYear(),cur.getMonth()-1,1);return renderCalendar()});
 $('#nextM').onclick=guard(()=>{cur=new Date(cur.getFullYear(),cur.getMonth()+1,1);return renderCalendar()});
@@ -448,8 +455,7 @@ $('#saveDay').onclick=guard(async()=>{
     body={kind:t,meal_id:m.id,locked};
   }
   const r=await api('/plan/'+dayKey,{method:'PUT',body});
-  $('#dlgDay').close();await renderCalendar();
-  if(r.skipped&&r.skipped.length)toast(`Leftovers could not be reserved on ${r.skipped.map(s=>short(parseD(s))).join(', ')}, because that day is already planned.`);
+  $('#dlgDay').close();await renderCalendar();warnSkipped(r);
 });
 $('#reroll').onclick=guard(async()=>{
   await api('/generate',{method:'POST',body:{start:dayKey,end:dayKey,replace:true,reroll:true}});
@@ -457,8 +463,8 @@ $('#reroll').onclick=guard(async()=>{
 });
 $('#swapBtn').onclick=guard(async()=>{
   const b=$('#swapWith').value;if(!b)throw new Error('Choose the day to swap with.');
-  await api('/plan/swap',{method:'POST',body:{a:dayKey,b}});
-  $('#dlgDay').close();await renderCalendar();
+  const r=await api('/plan/swap',{method:'POST',body:{a:dayKey,b}});
+  $('#dlgDay').close();await renderCalendar();warnSkipped(r);
 });
 
 /* ---------- generate ---------- */
@@ -565,15 +571,14 @@ $('#loadUrl').onclick=guard(async()=>{
 $('#saveMeal').onclick=guard(async()=>{
   const body={name:$('#mName').value,category:$('#mCat').value,leftovers:$('#mLeft').checked,leftover_days:+$('#mLeftDays').value,
     weight:+$('#mWeight').value,weekdays:$$('#mDays input:checked').map(i=>+i.value),servings:+$('#mServ').value||0,
-    prep_minutes:+$('#mPrep').value||0,ingredients:$('#mIng').value,url:$('#mUrl').value,notes:$('#mNotes').value};
+    prep_minutes:+$('#mPrep').value||0,ingredients:$('#mIng').value,url:$('#mUrl').value,notes:$('#mNotes').value,today:iso(new Date())};
   const r=await api(editId?'/meals/'+editId:'/meals',{method:editId?'PUT':'POST',body});
-  $('#dlgMeal').close();await loadMeals();renderMeals();
-  if(r.skipped&&r.skipped.length)toast(`Leftovers could not be reserved on ${r.skipped.map(s=>short(parseD(s))).join(', ')}, because that day is already planned.`);
+  $('#dlgMeal').close();await loadMeals();renderMeals();refreshUndo();warnSkipped(r);
 });
 $('#delMeal').onclick=guard(async()=>{
   if(!confirm('Delete this meal? Days already planned with it keep its name and ingredients.'))return;
   await api('/meals/'+editId,{method:'DELETE'});
-  $('#dlgMeal').close();await loadMeals();renderMeals();
+  $('#dlgMeal').close();await loadMeals();renderMeals();refreshUndo();
 });
 $('#openImport').onclick=()=>{$('#impText').value='';$('#dlgImport').showModal()};
 $('#runImport').onclick=guard(async()=>{
@@ -588,10 +593,14 @@ function fillSettings(){
   $('#sSlots').value=S.slots.join('\n');$('#sQuotas').value=S.quotas.join('\n');
   $('#sPantry').value=S.pantry.join('\n');$('#sUnits').value=S.units.join(', ');
   $('#icsUrl').value=location.origin+'/calendar.ics';
+  $('#pwaStatus').textContent=window.isSecureContext&&'serviceWorker' in navigator
+    ?'Available: the last loaded shopping list stays usable without a connection, and your browser may offer to install this page as an app.'
+    :'Not available on this address. Browsers only allow offline use and installing over https:// or on http://localhost. The planner itself works normally; to get these two features, serve it through an https reverse proxy.';
 }
 $('#icsUrl').onfocus=e=>e.target.select();
 $('#setForm').addEventListener('submit',guard(async e=>{
   e.preventDefault();
+  if(+$('#sWeek').value!==S.week_start&&!confirm('Changing the first day of the week resets the ticks on shopping lists (extra items are kept). Continue?'))return;
   S=await api('/settings',{method:'PUT',body:{household:+$('#sHousehold').value||0,week_start:+$('#sWeek').value,
     slots:$('#sSlots').value,quotas:$('#sQuotas').value,pantry:$('#sPantry').value,units:$('#sUnits').value}});
   weekStart=startOfWeek(weekStart);fillSettings();toast('Settings saved.');

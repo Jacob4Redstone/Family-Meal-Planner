@@ -3,6 +3,7 @@ import os
 import random
 import sqlite3
 import sys
+import time
 from datetime import date, timedelta
 
 import pytest
@@ -69,7 +70,7 @@ def test_parse_ingredient(line, qty, unit, key):
 
 
 def test_extra_units_and_singular():
-    assert appmod.parse_ingredient("2 cloves garlic", {"cloves"})[2:] == (2, "cloves")
+    assert appmod.parse_ingredient("2 bundles dill", {"bundles"})[2:] == (2, "bundles")
     assert appmod.singular("hummus") == "hummus"
     assert appmod.singular("tomatoes") == "tomato"
     assert appmod.singular("berries") == "berry"
@@ -425,3 +426,190 @@ def test_parse_recipe_json_ld():
     assert r == {"name": "Pancakes & more", "category": "Breakfast", "ingredients": ["2 eggs", "200 g flour"],
                  "servings": 4, "prep_minutes": 75, "url": "https://x.test/p"}
     assert appmod.parse_recipe("<html>nothing</html>") is None
+
+
+# ================================================================ round 2: regression tests
+
+def can_undo(c):
+    return c.get("/api/undo").get_json()["available"]
+
+
+def planned_month(c):
+    for i in range(6):
+        mk(c, f"M{i}")
+    c.post("/api/generate", json={"start": day(0), "end": day(6)})
+    assert can_undo(c)
+
+
+def test_undo_is_dropped_by_other_changes(client):
+    planned_month(client)
+    client.put(f"/api/plan/{day(3)}", json={"kind": "custom", "label": "Dinner at Anna's"})
+    assert not can_undo(client)
+    assert client.post("/api/undo").status_code == 400
+    assert plan_of(client, day(3), day(3))[day(3)]["name"] == "Dinner at Anna's"  # not clobbered
+
+    planned_month_again = client.post("/api/generate", json={"start": day(0), "end": day(6), "replace": True})
+    assert planned_month_again.status_code == 200 and can_undo(client)
+    client.post("/api/plan/swap", json={"a": day(0), "b": day(1)})
+    assert not can_undo(client)
+
+    client.post("/api/generate", json={"start": day(0), "end": day(6), "replace": True})
+    mid = next(iter(client.get("/api/meals").get_json()))["id"]
+    client.delete(f"/api/meals/{mid}")
+    assert not can_undo(client)
+
+
+def test_undo_expires(client, monkeypatch):
+    planned_month(client)
+    real = time.time()
+    monkeypatch.setattr(appmod.time, "time", lambda: real + appmod.UNDO_SECONDS + 5)
+    assert not can_undo(client)
+    assert client.post("/api/undo").status_code == 400
+
+
+def test_undo_still_works_right_after_planning(client):
+    planned_month(client)
+    assert client.post("/api/undo").status_code == 200
+
+
+def test_meal_edit_keeps_undo_unless_leftovers_change(client):
+    planned_month(client)
+    a = client.get("/api/meals").get_json()[0]
+    client.put(f"/api/meals/{a['id']}", json={"name": a["name"] + " renamed"})
+    assert can_undo(client)  # no plan rows changed
+
+
+def test_leftover_toggle_does_not_touch_the_past(client):
+    a = mk(client, "Retro")
+    past, future = date.today() - timedelta(40), date.today() + timedelta(10)
+    for d in (past, future):
+        client.put(f"/api/plan/{d.isoformat()}", json={"kind": "meal", "meal_id": a})
+    client.put(f"/api/meals/{a}", json={"name": "Retro", "leftovers": True})
+    p = plan_of(client, (past - timedelta(1)).isoformat(), (future + timedelta(2)).isoformat())
+    assert (past + timedelta(1)).isoformat() not in p  # history unchanged
+    assert p[(future + timedelta(1)).isoformat()]["kind"] == "leftover"
+    # turning it off again also leaves history alone and removes the future leftover
+    client.put(f"/api/meals/{a}", json={"name": "Retro", "leftovers": False})
+    assert (future + timedelta(1)).isoformat() not in plan_of(client, future.isoformat(), (future + timedelta(2)).isoformat())
+
+
+@pytest.mark.parametrize("line,key,qty,unit", [
+    ("2 tablespoons olive oil", "olive oil", 2, "tbsp"),
+    ("200 grams flour", "flour", 200, "g"),
+    ("1 onion, finely chopped", "onion", 1, ""),
+    ("salt, to taste", "salt", None, ""),
+    ("3-4 cloves garlic", "garlic", 4, "clove"),
+    ("3 to 4 cloves garlic", "garlic", 4, "clove"),
+    ("1 (14 oz) can beans", "bean", 1, "can"),
+    ("2 x 400 g tomatoes", "tomato", 800, "g"),
+    ("2 x tomatoes", "tomato", 2, ""),
+    ("2 cups of flour", "flour", 2, "cup"),
+    ("1 head of lettuce", "lettuce", 1, "head"),
+    ("1,5 dl cream", "cream", 150, "ml"),
+    ("1/2 tsp. salt", "salt", 0.5, "tsp"),
+    ("2 tomatoes", "tomato", 2, ""),
+    ("(optional)", "(optional)", None, ""),
+])
+def test_recipe_site_ingredient_lines(line, key, qty, unit):
+    k, _name, q, u = appmod.parse_ingredient(line)
+    assert (k, u) == (key, unit)
+    assert q == pytest.approx(qty) if qty is not None else q is None
+
+
+def test_recipe_lines_merge_in_shopping_and_pluralise(client):
+    a = mk(client, "Pasta", ingredients=["1 onion, finely chopped", "3-4 cloves garlic", "2 tablespoons olive oil"])
+    b = mk(client, "Soup", ingredients=["2 onions", "2 cloves garlic", "1 tbsp olive oil"])
+    for i, m in enumerate((a, b)):
+        client.put(f"/api/plan/{day(i * 2)}", json={"kind": "meal", "meal_id": m})
+    items = {i["name"]: i["amount"] for i in client.get(f"/api/shopping?week={day(0)}").get_json()["items"]}
+    assert items["Onion"] == "3" or items.get("Onions") == "3"
+    assert items["Garlic"] == "6 cloves" and items["Olive oil"] == "3 tbsp"
+    assert appmod.fmt_qty(1, "clove") == "1 clove" and appmod.fmt_qty(2, "bunch") == "2 bunches"
+
+
+def test_swap_reports_lost_leftover_days(client):
+    a = mk(client, "Roast", leftovers=True)
+    b = mk(client, "Fish")
+    client.put(f"/api/plan/{day(0)}", json={"kind": "meal", "meal_id": a})
+    client.put(f"/api/plan/{day(4)}", json={"kind": "meal", "meal_id": b})
+    client.put(f"/api/plan/{day(5)}", json={"kind": "custom", "label": "Out"})
+    r = client.post("/api/plan/swap", json={"a": day(0), "b": day(4)}).get_json()
+    assert r["ok"] and r["skipped"] == [day(5)]
+    assert plan_of(client, day(5), day(5))[day(5)]["name"] == "Out"
+
+
+def test_missing_meal_is_404(client):
+    assert client.put("/api/meals/9999", json={"name": "Ghost"}).status_code == 404
+    assert client.get("/api/meals").get_json() == []
+
+
+def test_partial_settings_update_keeps_the_rest(client):
+    client.put("/api/settings", json={"household": 4, "pantry": ["salt"], "slots": ["Fri = Pizza"]})
+    s = client.put("/api/settings", json={"week_start": 6}).get_json()
+    assert (s["household"], s["pantry"], s["slots"], s["week_start"]) == (4, ["salt"], ["Fri = Pizza"], 6)
+
+
+def test_clearing_a_middle_leftover_day_removes_the_tail(client):
+    a = mk(client, "Stew", leftovers=True, leftover_days=3)
+    client.put(f"/api/plan/{day(0)}", json={"kind": "meal", "meal_id": a})
+    client.put(f"/api/plan/{day(2)}", json={"kind": "clear"})
+    assert list(plan_of(client, day(0), day(5))) == [day(0), day(1)]
+    # replacing it with another meal does the same
+    b = mk(client, "Fish")
+    client.put(f"/api/plan/{day(0)}", json={"kind": "meal", "meal_id": a})
+    client.put(f"/api/plan/{day(1)}", json={"kind": "meal", "meal_id": b})
+    assert list(plan_of(client, day(0), day(5))) == [day(0), day(1)]
+
+
+def test_fill_does_not_resurrect_a_cleared_leftover_day_but_replace_does(client):
+    a = mk(client, "Stew", leftovers=True)
+    mk(client, "Other")
+    client.put(f"/api/plan/{day(0)}", json={"kind": "meal", "meal_id": a})
+    client.put(f"/api/plan/{day(1)}", json={"kind": "clear"})
+    client.post("/api/generate", json={"start": day(1), "end": day(1)})
+    e = plan_of(client, day(1), day(1))[day(1)]
+    assert e["kind"] == "meal" and e["name"] == "Other"  # a fresh pick, not the leftover again
+    client.put(f"/api/plan/{day(1)}", json={"kind": "clear"})
+    client.post("/api/generate", json={"start": day(1), "end": day(1), "replace": True})
+    assert plan_of(client, day(1), day(1))[day(1)]["kind"] == "leftover"
+
+
+def test_served_counts_use_the_browsers_date(client):
+    a = mk(client, "Soup")
+    client.put(f"/api/plan/{day(0)}", json={"kind": "meal", "meal_id": a})
+    before = client.get(f"/api/meals?today={day(-1)}").get_json()[0]
+    after = client.get(f"/api/meals?today={day(0)}").get_json()[0]
+    assert (before["times_served"], before["last_served"]) == (0, None)
+    assert (after["times_served"], after["last_served"]) == (1, day(0))
+    assert client.get("/api/meals?today=nonsense").status_code == 400
+
+
+def test_old_shopping_ticks_and_extras_are_pruned(client):
+    old_scope = f"{(date.today() - timedelta(200)).isoformat()}:1"
+    new_scope = f"{date.today().isoformat()}:1"
+    conn = sqlite3.connect(appmod.app.config["DB_PATH"])
+    conn.execute("INSERT INTO extras(id,scope,name) VALUES (1,?, 'old soap'), (2,?, 'new soap')", (old_scope, new_scope))
+    conn.execute("INSERT INTO checked VALUES (?, 'leek'), (?, 'extra:1'), (?, 'extra:2'), (?, 'extra:99')",
+                 (old_scope, new_scope, new_scope, new_scope))
+    conn.commit()
+    conn.close()
+    client.put("/api/shopping/check", json={"scope": new_scope, "key": "milk", "checked": True})  # triggers pruning
+    conn = sqlite3.connect(appmod.app.config["DB_PATH"])
+    assert [r[0] for r in conn.execute("SELECT name FROM extras")] == ["new soap"]
+    assert sorted(r[1] for r in conn.execute("SELECT * FROM checked")) == ["extra:2", "milk"]
+    conn.close()
+
+
+def test_week_start_change_keeps_extras_and_drops_ingredient_ticks(client):
+    a = mk(client, "Soup", ingredients=["Leek"])
+    d = date.today() + timedelta(30)
+    d += timedelta((2 - d.weekday()) % 7)  # a Wednesday: the same week under both week starts
+    client.put(f"/api/plan/{d.isoformat()}", json={"kind": "meal", "meal_id": a})
+    s = client.get(f"/api/shopping?week={d.isoformat()}").get_json()
+    client.put("/api/shopping/check", json={"scope": s["scope"], "key": "leek", "checked": True})
+    eid = client.post("/api/shopping/extras", json={"scope": s["scope"], "name": "Soap"}).get_json()["id"]
+    client.put("/api/shopping/check", json={"scope": s["scope"], "key": f"extra:{eid}", "checked": True})
+    client.put("/api/settings", json={"week_start": 6})
+    s2 = client.get(f"/api/shopping?week={d.isoformat()}").get_json()
+    assert [i["checked"] for i in s2["items"]] == [False]  # ingredient tick dropped
+    assert s2["extras"] == [{"id": eid, "name": "Soap", "checked": True}]  # extra and its tick followed the week

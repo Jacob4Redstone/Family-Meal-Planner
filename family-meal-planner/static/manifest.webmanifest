@@ -1,0 +1,13 @@
+{
+  "name": "Family Meal Planner",
+  "short_name": "Meals",
+  "description": "Plan family meals, leftovers and the weekly shopping list.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f8f5",
+  "theme_color": "#244f78",
+  "icons": [
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
